@@ -909,3 +909,22 @@ def report_data(participant_id,user_id):
         # print(user_data_updated)
 
         return user_data
+
+def build_channel_key(
+    scenario_id,
+    active_scenario_id,
+    team_group,
+    scope
+):
+    """
+    scope:
+      - ALL
+      - RED / BLUE / YELLOW / PURPLE
+      - GLOBAL (superadmin / white)
+    """
+    return (
+        f"SCN_{scenario_id}"
+        f"::ACT_{active_scenario_id}"
+        f"::TG_{team_group}"
+        f"::SCOPE_{scope}"
+    )

@@ -75,3 +75,15 @@ archive_scenario_collection = dbname.get_collection("corporate_archive_scenario"
 corporate_archive_scenario = dbname.get_collection("corporate_archive_scenario")
 archive_participant_collection = dbname.get_collection("corporate_archive_participant_data")
 corporate_flag_data_collection = dbname.get_collection("corporate_flag_data")
+
+# Scenario Team Chat 
+scenario_chat_channels_collection = dbname.get_collection(
+    "scenario_chat_channels"
+)
+scenario_chat_messages_collection = dbname.get_collection(
+    "scenario_chat_messages"
+)
+scenario_chat_messages_collection.create_index("channel_key")
+scenario_chat_messages_collection.create_index(
+    [("channel_key", 1), ("created_at", 1)]
+)

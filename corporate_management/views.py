@@ -43,9 +43,12 @@ from .serializers import (
     CorporateScenarioSwitchMachineSerializer,
     CorporateScenarioAdminToggleFlagLockSerializer,
     CorporateScenarioAdminToggleMilestoneLockSerializer,
-    CorporateScenarioAdminTogglePhaseLockSerializer
+    CorporateScenarioAdminTogglePhaseLockSerializer,
+    ScenarioChatSendSerializer,
+    ScenarioChatMessageListSerializer,
 )
 from corporate_management.api.serializers.scenario import ActiveScenarioIPListSerializer
+from corporate_management.services.chat_access import build_chat_channels
 from .utils import corporate_send_notification,send_notification_reload
 
 
@@ -399,20 +402,17 @@ class CorporateActiveScenarioDeleteView(generics.RetrieveAPIView):
             return Response(queryset, status=status.HTTP_400_BAD_REQUEST)
         return Response(queryset, status=status.HTTP_200_OK)
     
-
 class CorporateScenarioModeratorConsoleDetailView(generics.CreateAPIView):
-    serializer_class = CorporateScenarioModeratorConsoleDetailSerializer
     permission_classes = [CustomIsAuthenticated]
+    serializer_class = CorporateScenarioModeratorConsoleDetailSerializer
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
-        if serializer.is_valid():
-            scenario = serializer.save()
-            response = serializer.data
-            response.pop('_id', None)
-            return Response(response, status=status.HTTP_201_CREATED)
-        return Response({'errors': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-    
+        serializer.is_valid(raise_exception=True)
+
+        result = serializer.save()
+
+        return Response(result, status=status.HTTP_200_OK)
 
 class CorporateByCategoryIdView(generics.ListAPIView):
     permission_classes = [CustomIsAuthenticated]
@@ -632,4 +632,42 @@ class CorporateScenarioAdminTogglePhaseLockView(generics.GenericAPIView):
 
         return Response(result, status=status.HTTP_200_OK)
 
+#chat view
+class ScenarioChatChannelsView(APIView):
+    permission_classes = [CustomIsAuthenticated]
+
+    def get(self, request, active_scenario_id):
+        channels = build_chat_channels(
+            request.user,
+            active_scenario_id
+        )
+        return Response({"channels": channels})
+
+
+class ScenarioChatMessagesView(APIView):
+    permission_classes = [CustomIsAuthenticated]
+
+    def get(self, request, channel_key):
+        serializer = ScenarioChatMessageListSerializer()
+        messages = serializer.get(channel_key)
+        return Response({"messages": messages})
+
+
+class ScenarioChatSendView(APIView):
+    permission_classes = [CustomIsAuthenticated]
+
+    def post(self, request):
+        serializer = ScenarioChatSendSerializer(
+            data=request.data,
+            context={"request": request}
+        )
+
+        if serializer.is_valid():
+            msg = serializer.save()
+            return Response(msg, status=status.HTTP_201_CREATED)
+
+        return Response(
+            {"errors": serializer.errors},
+            status=400
+        )
     

@@ -31,14 +31,15 @@ from database_management.pymongo_client import (
     resource_credentials_collection,
     user_profile_collection,
     active_scenario_collection,
-
+    scenario_chat_messages_collection,
 )
 from .utils import (add_scenario_details,
                     start_corporate_game,
                     end_corporate_game,
                     generate_report_for_participant,
                     PDF,
-                    report_data)
+                    report_data,
+                    build_channel_key,)
 
 def _sanitize_meta(meta):
     if meta is None:
@@ -1254,6 +1255,47 @@ class CorporateScenarioSwitchMachineSerializer(serializers.Serializer):
         )
         return {"message": "Machine switched", "instance_id": validated_data["instance_id"]}
 
+class ScenarioChatSendSerializer(serializers.Serializer):
+    active_scenario_id = serializers.CharField()
+    channel_key = serializers.CharField()
+    message = serializers.CharField(max_length=2000)
+
+    def validate(self, data):
+        if not data["message"].strip():
+            raise serializers.ValidationError("Message cannot be empty")
+        return data
+
+    def create(self, validated_data):
+        user = self.context["request"].user
+        now = timezone.now()
+
+        doc = {
+            "id": f"MSG_{now.timestamp()}",
+            "active_scenario_id": validated_data["active_scenario_id"],
+            "channel_key": validated_data["channel_key"],
+
+            "sender_user_id": user["user_id"],
+            "sender_name": user.get("user_full_name"),
+            "sender_role": user.get("role"),
+            "sender_team_group": user.get("team_group"),
+
+            "message": validated_data["message"],
+            "created_at": now,
+        }
+
+        scenario_chat_messages_collection.insert_one(doc)
+        return doc
+
+
+class ScenarioChatMessageListSerializer(serializers.Serializer):
+    def get(self, channel_key):
+        return list(
+            scenario_chat_messages_collection.find(
+                {"channel_key": channel_key},
+                {"_id": 0}
+            ).sort("created_at", 1)
+        )
+
 class CorporateScenarioAdminToggleFlagLockSerializer(serializers.Serializer):
     active_scenario_id = serializers.CharField(max_length=100, required=True)
     participant_id = serializers.CharField(max_length=100, required=True)
@@ -1745,201 +1787,184 @@ class CorporateScenarioAchieveMilestoneSerializer(serializers.Serializer):
 
 
 class CorporateScenarioApproveMilestoneSerializer(serializers.Serializer):
-    active_scenario_id = serializers.CharField(max_length=100, required=True, write_only=True)
-    milestone_id = serializers.CharField(max_length=100, required=True, write_only=True)
-    participant_id = serializers.CharField(max_length=100, required=True, write_only=True)
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        additional_fields = instance
-        data.update(additional_fields)
-        return data
+    active_scenario_id = serializers.CharField(write_only=True)
+    milestone_id = serializers.CharField(write_only=True)
+    participant_id = serializers.CharField(write_only=True)
 
     def validate(self, data):
-        data['user'] = self.context['request'].user
+        user = self.context["request"].user
+        data["user"] = user
 
-        active_scenario = active_scenario_collection.find_one({"id": data["active_scenario_id"]}, {"_id": 0})
+        active_scenario = active_scenario_collection.find_one(
+            {"id": data["active_scenario_id"]},
+            {"_id": 0},
+        )
         if not active_scenario:
             raise serializers.ValidationError("Invalid Active Scenario ID")
 
-        if active_scenario["started_by"] != data['user']["user_id"]:
-            raise serializers.ValidationError("Permission Denied")
-
-        if not active_scenario["participant_data"].get(data["participant_id"]):
-            raise serializers.ValidationError("Invalid Active Scenario ID")
+        if active_scenario["started_by"] != user["user_id"]:
+            raise serializers.ValidationError("Permission denied")
 
         participant_data_id = active_scenario["participant_data"].get(data["participant_id"])
-        data["participant_data_id"] = participant_data_id
-        participant_data = participant_data_collection.find_one({'id': participant_data_id, 'milestone_data': {'$elemMatch': {'milestone_id': data["milestone_id"]}}})
+        if not participant_data_id:
+            raise serializers.ValidationError("Invalid Participant ID")
+
+        participant_data = participant_data_collection.find_one(
+            {
+                "id": participant_data_id,
+                "milestone_data": {"$elemMatch": {"milestone_id": data["milestone_id"]}},
+            }
+        )
         if not participant_data:
             raise serializers.ValidationError("Invalid Milestone ID")
 
-        is_achieved = None
-        for milestone in participant_data.get('milestone_data', []):
-            if milestone['milestone_id'] == data["milestone_id"]:
-                is_achieved = milestone['is_achieved']
-                break
+        milestone_entry = next(
+            (m for m in participant_data["milestone_data"]
+             if m["milestone_id"] == data["milestone_id"]),
+            None
+        )
 
-        if not is_achieved:
+        if not milestone_entry or not milestone_entry.get("is_achieved"):
             raise serializers.ValidationError("Milestone not yet achieved")
+
+        data["participant_data_id"] = participant_data_id
+        data["milestone_entry"] = milestone_entry
+        data["active_scenario"] = active_scenario
 
         return data
 
     def create(self, validated_data):
-        now = datetime.datetime.now
+        now = datetime.datetime.now()
 
-        # ---------- fetch data ----------
         milestone_db = milestone_data_collection.find_one(
-            {'id': validated_data["milestone_id"]},
-            {'_id': 0}
+            {"id": validated_data["milestone_id"]},
+            {"_id": 0},
         )
         if not milestone_db:
             raise serializers.ValidationError("Milestone not found")
 
-        participant_data = participant_data_collection.find_one(
-            {'id': validated_data["participant_data_id"]},
-            {'_id': 0}
-        )
-
-        milestone_entry = None
-        for m in participant_data.get("milestone_data", []):
-            if m.get("milestone_id") == validated_data["milestone_id"]:
-                milestone_entry = m
-                break
-
-        if not milestone_entry:
-            raise serializers.ValidationError("Milestone entry missing")
-
-        # ---------- base inputs ----------
         base_score = int(milestone_db.get("score", 0))
-        hint_used = bool(milestone_entry.get("hint_used", False))
+        hint_used = bool(validated_data["milestone_entry"].get("hint_used", False))
         hint_penalty = int(milestone_db.get("hint_penalty", 0))
 
-        # ---------- scenario scoring config ----------
-        active = active_scenario_collection.find_one(
-            {"id": validated_data["active_scenario_id"]},
-            {"_id": 0}
-        )
-
         scenario = corporate_scenario_collection.find_one(
-            {"id": active["scenario_id"]},
-            {"_id": 0}
+            {"id": validated_data["active_scenario"]["scenario_id"]},
+            {"_id": 0},
         ) or {}
 
         scoring_config = scenario.get("scoring_config", {"type": "standard"})
 
-        # ---------- compute score ----------
         if scoring_config.get("type") == "decay":
+            event_time = validated_data["milestone_entry"].get("achieved_at") or now
             final_score, meta = compute_decay_score(
-                base_score=base_score,
+                base_score,
                 scoring_config=scoring_config,
-                start_time=active.get("start_time"),
-                event_time=now,
+                start_time=validated_data["active_scenario"].get("start_time"),
+                event_time=event_time,
                 hint_used=hint_used,
                 hint_penalty=hint_penalty,
             )
         else:
             final_score, meta = compute_standard_score(
-                base_score=base_score,
+                base_score,
                 hint_used=hint_used,
                 hint_penalty=hint_penalty,
             )
 
-        # ---------- update milestone ----------
-        participant_data_collection.update_one(
+        result = participant_data_collection.update_one(
             {
-                'id': validated_data["participant_data_id"],
-                'milestone_data.milestone_id': validated_data["milestone_id"]
+                "id": validated_data["participant_data_id"],
+                "milestone_data.milestone_id": validated_data["milestone_id"],
             },
             {
-                '$set': {
-                    'milestone_data.$.is_approved': True,
-                    'milestone_data.$.obtained_score': final_score,
-                    'milestone_data.$.score_meta': meta,
-                    'milestone_data.$.approved_at': now,
+                "$set": {
+                    "milestone_data.$.is_approved": True,
+                    "milestone_data.$.obtained_score": final_score,
+                    "milestone_data.$.score_meta": meta,
+                    "milestone_data.$.approved_at": now,
                 }
             }
         )
 
-        # ---------- recompute totals ----------
-        updated_pd = participant_data_collection.find_one(
-            {'id': validated_data["participant_data_id"]},
-            {'_id': 0}
+        if result.matched_count == 0:
+            raise serializers.ValidationError("Milestone approval failed")
+
+        total = sum(
+            int(m.get("obtained_score", 0))
+            for m in participant_data_collection.find_one(
+                {"id": validated_data["participant_data_id"]},
+                {"_id": 0},
+            )["milestone_data"]
+        )
+
+        participant_data_collection.update_one(
+            {"id": validated_data["participant_data_id"]},
+            {"$set": {"total_obtained_score": total}},
+        )
+
+        return {
+            "message": "Milestone Approved",
+            "final_score": final_score,
+            "scoring_type": scoring_config.get("type", "standard"),
+        }
+
+class CorporateScenarioRejectMilestoneSerializer(serializers.Serializer):
+    active_scenario_id = serializers.CharField(write_only=True)
+    milestone_id = serializers.CharField(write_only=True)
+    participant_id = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        user = self.context["request"].user
+
+        active_scenario = active_scenario_collection.find_one(
+            {"id": data["active_scenario_id"]},
+            {"_id": 0},
+        )
+        if not active_scenario:
+            raise serializers.ValidationError("Invalid Active Scenario ID")
+
+        if active_scenario["started_by"] != user["user_id"]:
+            raise serializers.ValidationError("Permission denied")
+
+        participant_data_id = active_scenario["participant_data"].get(data["participant_id"])
+        if not participant_data_id:
+            raise serializers.ValidationError("Invalid Participant ID")
+
+        data["participant_data_id"] = participant_data_id
+        return data
+
+    def create(self, validated_data):
+        participant_data_collection.update_one(
+            {
+                "id": validated_data["participant_data_id"],
+                "milestone_data.milestone_id": validated_data["milestone_id"],
+            },
+            {
+                "$set": {
+                    "milestone_data.$.is_achieved": False,
+                    "milestone_data.$.is_approved": False,
+                    "milestone_data.$.obtained_score": 0,
+                    "milestone_data.$.approved_at": None,
+                    "milestone_data.$.achieved_at": None,
+                }
+            }
         )
 
         total = sum(
             int(m.get("obtained_score", 0))
-            for m in updated_pd.get("milestone_data", [])
+            for m in participant_data_collection.find_one(
+                {"id": validated_data["participant_data_id"]},
+                {"_id": 0},
+            )["milestone_data"]
         )
 
         participant_data_collection.update_one(
-            {'id': validated_data["participant_data_id"]},
-            {'$set': {'total_obtained_score': total}}
+            {"id": validated_data["participant_data_id"]},
+            {"$set": {"total_obtained_score": total}},
         )
 
-        return {
-            'message': 'Milestone Approved.',
-            'final_score': final_score,
-            'scoring_type': scoring_config.get("type", "standard"),
-        }
+        return {"message": "Milestone Rejected"}
 
-class CorporateScenarioRejectMilestoneSerializer(serializers.Serializer):
-    active_scenario_id = serializers.CharField(max_length=100, required=True, write_only=True)
-    milestone_id = serializers.CharField(max_length=100, required=True, write_only=True)
-    participant_id = serializers.CharField(max_length=100, required=True, write_only=True)
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        additional_fields = instance
-        data.update(additional_fields)
-        return data
-
-    def validate(self, data):
-        data['user'] = self.context['request'].user
-
-        active_scenario = active_scenario_collection.find_one({"id": data["active_scenario_id"]}, {"_id": 0})
-        if not active_scenario:
-            raise serializers.ValidationError("Invalid Active Scenario ID")
-
-        if active_scenario["started_by"] != data['user']["user_id"]:
-            raise serializers.ValidationError("Permission Denied")
-
-        if not active_scenario["participant_data"].get(data["participant_id"]):
-            raise serializers.ValidationError("Invalid Active Scenario ID")
-
-        participant_data_id = active_scenario["participant_data"].get(data["participant_id"])
-        data["participant_data_id"] = participant_data_id
-        participant_data = participant_data_collection.find_one({'id': participant_data_id, 'milestone_data': {'$elemMatch': {'milestone_id': data["milestone_id"]}}})
-        if not participant_data:
-            raise serializers.ValidationError("Invalid Milestone ID")
-
-        is_achieved = None
-        for milestone in participant_data.get('milestone_data', []):
-            if milestone['milestone_id'] == data["milestone_id"]:
-                is_achieved = milestone['is_achieved']
-                break
-
-        if not is_achieved:
-            raise serializers.ValidationError("Milestone not yet achieved")
-
-        return data
-
-    def create(self, validated_data):
-        filter_query = {'id': validated_data["participant_data_id"], 'milestone_data.milestone_id': validated_data["milestone_id"]}
-        update_operation = {
-            '$set': {
-                'milestone_data.$.is_achieved': False,
-                'milestone_data.$.is_approved': False,
-                'milestone_data.$.obtained_score': 0,
-            }
-        }
-        participant_data_collection.update_one(filter_query, update_operation)
-
-        participant_data = participant_data_collection.find_one({'id': validated_data["participant_data_id"]})
-        total_obtained_score = sum(milestone['obtained_score'] for milestone in participant_data['milestone_data'])
-        participant_data_collection.update_one({'_id': participant_data['_id']}, {'$set': {'total_obtained_score': total_obtained_score}})
-
-        return {'message': 'Milestone Rejected.'}
 
 
 class CorporateScenarioShowHintSerializer(serializers.Serializer):
@@ -2425,71 +2450,54 @@ class CorporateActiveScenarioDeleteSerializer(serializers.Serializer):
 
 
 class CorporateScenarioModeratorConsoleDetailSerializer(serializers.Serializer):
-    active_scenario_id = serializers.CharField(max_length=100, write_only=True)
-    participant_id = serializers.CharField(max_length=100, write_only=True)
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        data.update(instance)
-        return data
+    active_scenario_id = serializers.CharField(write_only=True)
+    participant_id = serializers.CharField(write_only=True)
 
     def validate(self, data):
-        data["user"] = self.context["request"].user
+        user = self.context["request"].user
 
-        # ---------- ACTIVE SCENARIO ----------
         active_scenario = active_scenario_collection.find_one(
             {
                 "id": data["active_scenario_id"],
-                "started_by": data["user"]["user_id"],
+                "started_by": user["user_id"],
             },
             {"_id": 0},
         )
         if not active_scenario:
             raise serializers.ValidationError("Invalid Active Scenario ID")
 
-        if data["participant_id"] not in active_scenario["participant_data"]:
-            raise serializers.ValidationError("Invalid Participant Id")
+        participant_data_id = active_scenario["participant_data"].get(data["participant_id"])
+        if not participant_data_id:
+            raise serializers.ValidationError("Invalid Participant ID")
 
-        # ---------- PARTICIPANT ----------
-        participant_data = participant_data_collection.find_one(
-            {"id": active_scenario["participant_data"][data["participant_id"]]},
+        participant = participant_data_collection.find_one(
+            {"id": participant_data_id},
             {"_id": 0},
         )
-        if not participant_data:
-            raise serializers.ValidationError("Invalid Participant Id")
+        if not participant:
+            raise serializers.ValidationError("Participant not found")
 
         scenario = corporate_scenario_collection.find_one(
             {"id": active_scenario["scenario_id"]},
             {"_id": 0},
-        )
-        if not scenario:
-            raise serializers.ValidationError("Scenario not found")
+        ) or {}
 
         data["active_scenario"] = active_scenario
-        data["participant_data"] = participant_data
+        data["participant"] = participant
         data["scenario"] = scenario
 
         return data
 
     def create(self, validated_data):
-        participant = validated_data["participant_data"]
-        active_scenario = validated_data["active_scenario"]
+        participant = validated_data["participant"]
+        scenario = validated_data["scenario"]
 
-        # ---------- CONSOLE URL ----------
-        try:
-            instance_id = participant["instance_id"]
-            instance = get_cloud_instance(instance_id)
-            console = get_instance_console(instance)
-            console_url = console.url
-        except Exception:
-            raise serializers.ValidationError("Instance Retrieval Error")
-        #  GROUP MILESTONES BY PHASE (UI EXPECTS THIS)
-       
-        phase_map = defaultdict(lambda: {
-            "phase_id": None,
-            "phase_name": "Phase",
-            "items": []
-        })
+        phase_lookup = {
+            p["id"]: p.get("phase_name") or p.get("name") or "Phase"
+            for p in scenario.get("phases", [])
+        }
+
+        items_by_phase = {}
 
         for md in participant.get("milestone_data", []):
             milestone_db = milestone_data_collection.find_one(
@@ -2500,56 +2508,43 @@ class CorporateScenarioModeratorConsoleDetailSerializer(serializers.Serializer):
                 continue
 
             phase_id = milestone_db.get("phase_id")
+            phase_name = phase_lookup.get(phase_id, "Phase")
 
-            phase_map[phase_id]["phase_id"] = phase_id
-            phase_map[phase_id]["phase_name"] = milestone_db.get(
-                "phase_name", "Phase"
-            )
-
-            phase_map[phase_id]["items"].append({
+            items_by_phase.setdefault(phase_id, {
+                "phase_id": phase_id,
+                "phase_name": phase_name,
+                "items": [],
+            })["items"].append({
                 "milestone_id": md["milestone_id"],
                 "milestone_name": milestone_db.get("name"),
                 "milestone_description": milestone_db.get("description", ""),
                 "milestone_score": milestone_db.get("score", 0),
                 "obtained_score": md.get("obtained_score", 0),
-
                 "is_achieved": md.get("is_achieved", False),
                 "is_approved": md.get("is_approved", False),
-
+                "submitted_text": md.get("submitted_text"),
+                "evidence_files": md.get("evidence_files", []),
                 "hint_used": md.get("hint_used", False),
                 "hint_string": milestone_db.get("hint"),
                 "hint_penalty": milestone_db.get("hint_penalty", 0),
-
-                "submitted_text": md.get("submitted_text"),
-                "evidence_files": md.get("evidence_files", []),
-
                 "submitted_at": md.get("submitted_at"),
                 "achieved_at": md.get("achieved_at"),
                 "approved_at": md.get("approved_at"),
-
                 "locked": md.get("locked", False),
                 "locked_by_admin": md.get("locked_by_admin", False),
             })
-        # ---------- COUNTS ----------
-        total_milestones = sum(len(p["items"]) for p in phase_map.values())
-        approved_count = sum(
-            1
-            for p in phase_map.values()
-            for i in p["items"]
-            if i["is_approved"]
-        )
-        #  FINAL RESPONSE 
+
         return {
             "scenario_type": "MILESTONE",
-            "active_scenario_id": active_scenario["id"],
+            "active_scenario_id": validated_data["active_scenario"]["id"],
             "participant_id": participant["user_id"],
             "team": participant["team"],
-            "console_url": console_url,
-
-            "itemsByPhase": dict(phase_map),
-
-            "total_milestone_count": total_milestones,
-            "approved_milestone_count": approved_count,
+            "console_url": None,
+            "itemsByPhase": items_by_phase,
+            "total_milestone_count": sum(len(v["items"]) for v in items_by_phase.values()),
+            "approved_milestone_count": sum(
+                1 for v in items_by_phase.values() for m in v["items"] if m["is_approved"]
+            ),
         }
 
 

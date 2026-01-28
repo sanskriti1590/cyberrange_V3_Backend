@@ -39,12 +39,14 @@ urlpatterns = [
     path("scenario/flag-status/<slug:participant_id>/<slug:flag_id>/",FlagStatusView.as_view(),name="flag_status"), 
     path('game/topology/<slug:scenario_id>/',CorporateTopologyView.as_view(), name= "topology-view"),
     path("scenario/infra/<slug:infra_id>/",CorporateScenarioInfraDetailView.as_view(), name="infra-view"),
-    path("corporate/scenario/console/switch-machine/",CorporateScenarioSwitchMachineView.as_view(),name="switch-console" ),
-    path("corporate/scenario/admin/flag/toggle-lock/", CorporateScenarioAdminToggleFlagLockView.as_view(), name="flag-lock" ),
-    path("corporate/scenario/admin/milestone/toggle-lock/", CorporateScenarioAdminToggleMilestoneLockView.as_view(),name="milestone-lock"),
-    path( "corporate/scenario/admin/phase/toggle-lock/", CorporateScenarioAdminTogglePhaseLockView.as_view(),name="phase-locl" ),
-    path( "corporate/scenario/scenario/walkthroughs/", CorporateScenarioWalkthroughListView.as_view(),name="corporate-scenario-walkthrough-list")
-
+    path("scenario/console/switch-machine/",CorporateScenarioSwitchMachineView.as_view(),name="switch-console" ),
+    path("scenario/admin/flag/toggle-lock/", CorporateScenarioAdminToggleFlagLockView.as_view(), name="flag-lock" ),
+    path("scenario/admin/milestone/toggle-lock/", CorporateScenarioAdminToggleMilestoneLockView.as_view(),name="milestone-lock"),
+    path("scenario/admin/phase/toggle-lock/", CorporateScenarioAdminTogglePhaseLockView.as_view(),name="phase-locl" ),
+    path("scenario/scenario/walkthroughs/", CorporateScenarioWalkthroughListView.as_view(),name="corporate-scenario-walkthrough-list"),
+    path("scenario/chat/channels/<str:active_scenario_id>/",ScenarioChatChannelsView.as_view(),name="corporate-chat-channel"),
+    path("scenario/chat/messages/<str:channel_key>/",ScenarioChatMessagesView.as_view(),name="corporate-chat-message"),
+    path("scenario/chat/send/", ScenarioChatSendView.as_view(),name="corporate-chat-send"),
 ]
 
 urlpatterns = format_suffix_patterns(urlpatterns)
