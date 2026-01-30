@@ -637,10 +637,7 @@ class ScenarioChatChannelsView(APIView):
     permission_classes = [CustomIsAuthenticated]
 
     def get(self, request, active_scenario_id):
-        channels = build_chat_channels(
-            request.user,
-            active_scenario_id
-        )
+        channels = build_chat_channels(active_scenario_id, request.user)  # ✅ correct order
         return Response({"channels": channels})
 
 
@@ -652,7 +649,6 @@ class ScenarioChatMessagesView(APIView):
         messages = serializer.get(channel_key)
         return Response({"messages": messages})
 
-
 class ScenarioChatSendView(APIView):
     permission_classes = [CustomIsAuthenticated]
 
@@ -662,12 +658,26 @@ class ScenarioChatSendView(APIView):
             context={"request": request}
         )
 
-        if serializer.is_valid():
-            msg = serializer.save()
-            return Response(msg, status=status.HTTP_201_CREATED)
+        serializer.is_valid(raise_exception=True)
+        msg = serializer.save()
 
-        return Response(
-            {"errors": serializer.errors},
-            status=400
-        )
-    
+        # 🔍 HARD DEBUG — DO NOT SKIP
+        from bson import ObjectId
+        import json
+
+        def find_objectid(obj, path="root"):
+            if isinstance(obj, ObjectId):
+                raise RuntimeError(f"ObjectId found at {path}")
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    find_objectid(v, f"{path}.{k}")
+            if isinstance(obj, list):
+                for i, v in enumerate(obj):
+                    find_objectid(v, f"{path}[{i}]")
+
+        find_objectid(msg)
+
+        # If this line runs, msg is clean
+        json.dumps(msg)
+
+        return Response(msg, status=status.HTTP_201_CREATED)

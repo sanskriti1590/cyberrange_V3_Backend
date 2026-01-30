@@ -21,6 +21,7 @@ from database_management.pymongo_client import (
     corporate_scenario_collection,
     milestone_data_collection,
     flag_data_collection,
+    corporate_scenario_infra_collection,
 )
 from user_management.encryption import cipher_suite
 from user_management.utils import USER_ROLES
@@ -1893,8 +1894,6 @@ class GetCTFScenarioForUserSpecificSerializer(serializers.Serializer):
                 }
             }
         
-
-
 class CorporateApproveSerializer(serializers.Serializer):
     corporate_id = serializers.CharField(max_length=50, required=True)
 
@@ -1903,52 +1902,176 @@ class CorporateApproveSerializer(serializers.Serializer):
         additional_fields = instance
         data.update(additional_fields)
         return data  
-    
+
     def get(self):
-        unapproved_scenario = list(corporate_scenario_collection.find({"is_approved":False,"is_prepared":True},
-                                                            {'_id': 0,
-                                                             'infra_id':0,
-                                                             'files_data':0,
-                                                             'is_approved':0,
-                                                             'is_prepared':0,
-                                                             'created_at':0,
-                                                             'updated_at':0,
-                                                            }))
+        unapproved_scenario = list(
+            corporate_scenario_collection.find(
+                {"is_approved": False, "is_prepared": True},
+                {
+                    "_id": 0,
+                    "infra_id": 0,
+                    "files_data": 0,
+                    "is_approved": 0,
+                    "is_prepared": 0,
+                    "created_at": 0,
+                    "updated_at": 0,
+                },
+            )
+        )
+
         for scenario in unapproved_scenario:
-            scenario["type"] = "Milestone"  if scenario.get("milestone_data") else "Flag"
-            scenario.pop("milestone_data") if scenario.get("milestone_data") else scenario.pop("flag_data")
+            scenario["type"] = "Milestone" if scenario.get("milestone_data") else "Flag"
+            scenario.pop("milestone_data", None)
+            scenario.pop("flag_data", None)
+            scenario["review_done"] = bool(scenario.get("review_done", False))
+
         return unapproved_scenario
 
     def validate(self, data):
-        data['corporate'] = corporate_scenario_collection.find_one({'id': data['corporate_id']
-        }, {'_id': 0})
+        corporate = corporate_scenario_collection.find_one(
+            {"id": data["corporate_id"]},
+            {"_id": 0}
+        )
 
-        if not data['corporate']:
-            raise serializers.ValidationError("Invalid Corporate ID")   
-        if data['corporate']["is_approved"] == True and data['corporate']["is_prepared"] == True:
-            raise serializers.ValidationError("Corporate Already Approved.")
+        if not corporate:
+            raise serializers.ValidationError("Invalid Corporate ID")
 
+        if corporate.get("is_approved"):
+            raise serializers.ValidationError("Corporate already approved.")
 
+        infra_id = corporate.get("infra_id")
+        if not infra_id:
+            raise serializers.ValidationError("Infra ID missing.")
+
+        infra = corporate_scenario_infra_collection.find_one(
+            {"id": infra_id},
+            {"_id": 0}
+        )
+
+        if not infra:
+            raise serializers.ValidationError("Infra not found.")
+
+        # 🔥 ONLY CHECK THAT MATTERS
+        if infra.get("status") != "REVIEWED":
+            raise serializers.ValidationError("Please review infra before approval.")
+
+        data["corporate"] = corporate
+        data["infra"] = infra
         return data
 
     def create(self, validated_data):
+        corporate = validated_data["corporate"]
+        infra = validated_data["infra"]
+        now = datetime.datetime.utcnow()
 
-        updated_scenario = corporate_scenario_collection.update_one({'id': validated_data['corporate'].get('id')}, {'$set': {
-            'is_approved': True,
-            'updated_at': datetime.datetime.now()
-        }})
+        # Approve infra
+        corporate_scenario_infra_collection.update_one(
+            {"id": infra["id"]},
+            {"$set": {
+                "status": "APPROVED",
+                "review.approved_at": now,
+                "updated_at": now
+            }}
+        )
 
-        response = {
-            'corporate_id': validated_data['corporate_id'],
-            'message' : "Corporate Approve Successfully."
+        # Approve scenario
+        corporate_scenario_collection.update_one(
+            {"id": corporate["id"]},
+            {"$set": {
+                "is_approved": True,
+                "approved_at": now,
+                "updated_at": now
+            }}
+        )
+
+        return {
+            "corporate_id": corporate["id"],
+            "infra_id": infra["id"],
+            "message": "Corporate approved successfully."
         }
 
-        return response
-    
-    
-    class Meta:
-        ref_name = 'AdminCorporateApprove'
+class CorporateInfraReviewGetSerializer(serializers.Serializer):
+    corporate_id = serializers.CharField(required=True)
 
+    def validate(self, data):
+        corporate = corporate_scenario_collection.find_one(
+            {"id": data["corporate_id"]},
+            {"_id": 0}
+        )
+        if not corporate:
+            raise serializers.ValidationError("Invalid Corporate ID")
+
+        if corporate.get("is_approved") is True:
+            raise serializers.ValidationError("Already approved")
+
+        data["corporate"] = corporate
+        return data
+
+    def get_infra(self):
+        corporate = self.validated_data["corporate"]
+        infra_id = corporate.get("infra_id")
+
+        if not infra_id:
+            return {"corporate_id": corporate["id"], "infra": {}}
+
+        infra = corporate_scenario_infra_collection.find_one(
+            {"id": infra_id},
+            {"_id": 0}
+        ) or {}
+
+        return {
+            "corporate_id": corporate["id"],
+            "infra": infra, 
+        }
+    
+class CorporateInfraReviewSaveSerializer(serializers.Serializer):
+    corporate_id = serializers.CharField(required=True)
+    reviewed_infra = serializers.JSONField(required=True)
+
+    def validate(self, data):
+        corporate = corporate_scenario_collection.find_one(
+            {"id": data["corporate_id"]},
+            {"_id": 0}
+        )
+        if not corporate:
+            raise serializers.ValidationError("Invalid Corporate ID")
+
+        if corporate.get("is_approved") is True:
+            raise serializers.ValidationError("Already approved")
+
+        infra_id = corporate.get("infra_id")
+        if not infra_id:
+            raise serializers.ValidationError("Infra ID missing.")
+
+        data["corporate"] = corporate
+        data["infra_id"] = infra_id
+        return data
+
+    def create(self, validated_data):
+        infra_id = validated_data["infra_id"]
+        reviewed = validated_data["reviewed_infra"]
+        now = datetime.datetime.utcnow()
+
+        # ✅ overwrite infra content + set review status
+        corporate_scenario_infra_collection.update_one(
+            {"id": infra_id},
+            {"$set": {
+                "networks": reviewed.get("networks", []),
+                "routers": reviewed.get("routers", []),
+                "instances": reviewed.get("instances", []),
+                "firewall": reviewed.get("firewall", []),
+
+                "status": "REVIEWED",
+                "review": {
+                    "review_done": True,
+                    "reviewed_at": now,
+                    "reviewed_by": getattr(self.context["request"].user, "email", "admin"),
+                },
+                "updated_at": now
+            }}
+        )
+
+        return {"message": "Infra review saved successfully.", "infra_id": infra_id}
 
 class CorporateUnapproveSerializer(serializers.Serializer):
     corporate_id = serializers.CharField(max_length=50, required=True)
@@ -2004,3 +2127,125 @@ class CorporateUnapproveSerializer(serializers.Serializer):
     
     class Meta:
         ref_name = 'AdminCorporateUnapprove'
+
+
+
+class AdminCorporateScenarioDetailSerializer(serializers.Serializer):
+
+    def get(self, scenario_id):
+        scenario = corporate_scenario_collection.find_one(
+            {"id": scenario_id},
+            {"_id": 0}
+        )
+        if not scenario:
+            raise serializers.ValidationError("Invalid Corporate Scenario Id")
+
+        # creator
+        user = user_collection.find_one(
+            {"user_id": scenario.get("creator_id")},
+            {"_id": 0, "user_full_name": 1}
+        )
+        scenario["creator_name"] = user["user_full_name"] if user else "—"
+
+        is_flag = bool(scenario.get("flag_data"))
+        scenario["type"] = "FLAG" if is_flag else "MILESTONE"
+
+        # ✅ scoring config (THIS FIXES DECAY / STANDARD DEFAULT)
+        scenario["scoring_config"] = scenario.get("scoring_config", {
+            "type": "standard",
+            "decay": {}
+        })
+
+        items = []
+
+        if is_flag:
+            for team, ids in scenario.get("flag_data", {}).items():
+                for fid in ids:
+                    flag = flag_data_collection.find_one({"id": fid}, {"_id": 0})
+                    if not flag:
+                        continue
+
+                    items.append({
+                        "id": flag["id"],
+                        "team": team.replace("_team", "").upper(),
+                        "phase_id": flag.get("phase_id", ""),
+                        "name": flag.get("question", ""),     # ✅ FIX
+                        "answer": flag.get("answer", ""),
+                        "hint": flag.get("hint", ""),
+                        "points": flag.get("score", 100),     # ✅ FIX
+                        "hint_penalty": flag.get("hint_penalty", 0),
+                        "placeholder": flag.get("placeholder", ""),
+                        "show_placeholder": flag.get("show_placeholder", True),
+                        "is_locked": flag.get("is_locked", False),
+                    })
+
+        else:
+            for team, ids in scenario.get("milestone_data", {}).items():
+                for mid in ids:
+                    ms = milestone_data_collection.find_one({"id": mid}, {"_id": 0})
+                    if not ms:
+                        continue
+
+                    items.append({
+                        "id": ms["id"],
+                        "team": team.replace("_team", "").upper(),
+                        "phase_id": ms.get("phase_id", ""),
+                        "name": ms.get("name", ""),
+                        "hint": ms.get("hint", ""),
+                        "points": ms.get("score", 100),
+                        "hint_penalty": ms.get("hint_penalty", 0),
+                        "placeholder": "",
+                        "show_placeholder": False,
+                        "is_locked": False,
+                    })
+
+        scenario["items"] = items
+        return scenario
+
+    
+class AdminCorporateScenarioUpdateSerializer(serializers.Serializer):
+    scenario_id = serializers.CharField()
+
+    name = serializers.CharField(required=False)
+    category_id = serializers.CharField(required=False)
+    severity = serializers.CharField(required=False)
+    description = serializers.CharField(required=False)
+    objective = serializers.CharField(required=False, allow_blank=True)
+    prerequisite = serializers.CharField(required=False, allow_blank=True)
+
+    scoring_type = serializers.ChoiceField(
+        choices=("standard", "decay"),
+        required=False
+    )
+    scoring_decay = serializers.DictField(required=False)
+
+    def validate(self, data):
+        scenario = corporate_scenario_collection.find_one(
+            {"id": data["scenario_id"]},
+            {"_id": 0}
+        )
+        if not scenario:
+            raise serializers.ValidationError("Invalid Scenario ID")
+
+        if scenario.get("is_approved") is True:
+            raise serializers.ValidationError("Approved scenario cannot be edited")
+
+        data["scenario"] = scenario
+        return data
+
+    def create(self, validated_data):
+        scenario_id = validated_data.pop("scenario_id")
+        validated_data.pop("scenario")
+
+        update_doc = {
+            k: v for k, v in validated_data.items()
+            if v is not None
+        }
+        update_doc["updated_at"] = datetime.datetime.utcnow()
+
+        corporate_scenario_collection.update_one(
+            {"id": scenario_id},
+            {"$set": update_doc}
+        )
+
+        return {"message": "Scenario updated successfully"}

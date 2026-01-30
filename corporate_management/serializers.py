@@ -3,9 +3,13 @@ import io
 import ipaddress
 import os
 from bson import ObjectId
+import uuid
 from collections import defaultdict
 
 from rest_framework import serializers
+from django.utils import timezone
+from django.conf import settings
+
 
 from cloud_management.utils import (
     get_instance_images,
@@ -1255,37 +1259,116 @@ class CorporateScenarioSwitchMachineSerializer(serializers.Serializer):
         )
         return {"message": "Machine switched", "instance_id": validated_data["instance_id"]}
 
+ALLOWED_CHAT_FILE_TYPES = (
+    ".pdf", ".png", ".jpg", ".jpeg",
+    ".txt", ".log", ".csv", ".json"
+)
+
+CHAT_UPLOAD_DIR = "static/chat_attachments"
+
+
 class ScenarioChatSendSerializer(serializers.Serializer):
     active_scenario_id = serializers.CharField()
     channel_key = serializers.CharField()
-    message = serializers.CharField(max_length=2000)
+    message = serializers.CharField(
+        max_length=2000,
+        allow_blank=True,
+        required=False
+    )
+    attachments = serializers.ListField(
+        child=serializers.FileField(validators=[validate_file_size]),
+        required=False
+    )
 
     def validate(self, data):
-        if not data["message"].strip():
-            raise serializers.ValidationError("Message cannot be empty")
+        message = data.get("message", "").strip()
+        attachments = data.get("attachments", [])
+
+        if not message and not attachments:
+            raise serializers.ValidationError(
+                "Either message or attachment is required"
+            )
+
+        for f in attachments:
+            ext = os.path.splitext(f.name)[1].lower()
+            if ext not in ALLOWED_CHAT_FILE_TYPES:
+                raise serializers.ValidationError(
+                    f"File type {ext} not allowed"
+                )
+
         return data
 
     def create(self, validated_data):
         user = self.context["request"].user
         now = timezone.now()
 
+        attachments_meta = []
+
+        for f in validated_data.get("attachments", []):
+            ext = os.path.splitext(f.name)[1]
+            att_id = f"ATT_{uuid.uuid4().hex[:12]}"
+            new_name = f"{att_id}{ext}"
+
+            save_path = os.path.join(CHAT_UPLOAD_DIR, new_name)
+            os.makedirs(CHAT_UPLOAD_DIR, exist_ok=True)
+
+            with open(save_path, "wb+") as dst:
+                for chunk in f.chunks():
+                    dst.write(chunk)
+
+            attachments_meta.append({
+                "id": att_id,
+                "file_name": f.name,
+                "file_type": f.content_type,
+                "file_url": f"{settings.API_URL}/{save_path}",
+                "uploaded_at": now.isoformat(),
+            })
+
+        # =====================================================
+        # 🔑 FIX: DETERMINE CHAT ROLE FROM PARTICIPANT DATA
+        # =====================================================
+        sender_role = "WHITE"
+        sender_team_group = "WHITE"
+
+        participant = participant_data_collection.find_one(
+            {"user_id": user["user_id"]},
+            {"_id": 0}
+        )
+
+        if participant:
+            # NORMAL PLAYER
+            sender_role = (participant.get("team") or "WHITE").upper()
+            sender_team_group = participant.get("team_group", "DEFAULT")
+        else:
+            # WHITE TEAM / ADMIN / SUPERADMIN
+            if user.get("is_superadmin"):
+                sender_role = "SUPERADMIN"
+            else:
+                sender_role = "WHITE"
+
+            sender_team_group = "WHITE"
+
+        # =====================================================
+        # MESSAGE DOCUMENT
+        # =====================================================
         doc = {
-            "id": f"MSG_{now.timestamp()}",
+            "id": f"MSG_{int(now.timestamp() * 1000)}",
             "active_scenario_id": validated_data["active_scenario_id"],
             "channel_key": validated_data["channel_key"],
 
-            "sender_user_id": user["user_id"],
-            "sender_name": user.get("user_full_name"),
-            "sender_role": user.get("role"),
-            "sender_team_group": user.get("team_group"),
+            "sender_user_id": str(user["user_id"]),
+            "sender_name": str(user.get("user_full_name") or ""),
+            "sender_role": sender_role,                 # ✅ FIXED
+            "sender_team_group": sender_team_group,     # ✅ FIXED
 
-            "message": validated_data["message"],
-            "created_at": now,
+            "message": validated_data.get("message", "").strip(),
+            "attachments": attachments_meta,
+            "created_at": now.isoformat(),
         }
 
         scenario_chat_messages_collection.insert_one(doc)
+        doc.pop("_id", None)
         return doc
-
 
 class ScenarioChatMessageListSerializer(serializers.Serializer):
     def get(self, channel_key):
@@ -1295,7 +1378,7 @@ class ScenarioChatMessageListSerializer(serializers.Serializer):
                 {"_id": 0}
             ).sort("created_at", 1)
         )
-
+    
 class CorporateScenarioAdminToggleFlagLockSerializer(serializers.Serializer):
     active_scenario_id = serializers.CharField(max_length=100, required=True)
     participant_id = serializers.CharField(max_length=100, required=True)
@@ -2312,6 +2395,26 @@ class CorporateScenarioModeratorSerializer(serializers.Serializer):
             "milestone_data",
         ]:
             scenario.pop(key, None)
+        
+        try:
+            instance_id = None
+
+            # pick any participant (first is fine for moderator)
+            for pd_id in active_scenario["participant_data"].values():
+                pd = participant_data_collection.find_one({"id": pd_id}, {"_id": 0})
+                if pd and pd.get("instance_id"):
+                    instance_id = pd["instance_id"]
+                    break
+
+            if instance_id:
+                instance = get_cloud_instance(instance_id)
+                console = get_instance_console(instance)
+                scenario["console_url"] = console.url
+            else:
+                scenario["console_url"] = None
+
+        except Exception:
+            scenario["console_url"] = None
 
         return scenario
 

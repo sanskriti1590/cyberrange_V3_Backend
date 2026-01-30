@@ -35,9 +35,16 @@ from .views import (
     RemoveCTFScenarioForUserView,
     GetCTFScenarioForUserSpecificView,
 
-    CorporateApproveView,
+    CorporateApproveCreateView,
+    CorporateApproveListView,
     CorporateUnapproveView,
-
+    CorporateInfraReviewSaveView,
+    CorporateInfraReviewGetView,
+    AdminCorporateScenarioUpdateView,
+    AdminCorporateScenarioPhaseUpdateView,
+    AdminCorporateScenarioFlagUpdateView,
+    AdminCorporateScenarioMilestoneUpdateView,
+    AdminCorporateScenarioDetailView,
 )
 
 
@@ -78,8 +85,16 @@ urlpatterns = [
     path('user-specific/<slug:keyword>/<slug:user_id>/<slug:item_id>/', RemoveCTFScenarioForUserView.as_view(), name='remove-user-specific-ctf-scenario'),
     path('game/based-on-category/<slug:game_type>/<slug:category_id>/<slug:user_id>/', GetCTFScenarioForUserSpecificView.as_view(), name='get-based-on-category-user-ctf-scenario'),
 
-    path('corporate/game-approve/', CorporateApproveView.as_view(), name='corporate-approve'),
+    path("corporate/game-approve/", CorporateApproveListView.as_view(), name="corporate-approve-list"),
+    path("corporate/game-approve/submit/", CorporateApproveCreateView.as_view(), name="corporate-approve-submit"),
     path('corporate/game-unapprove/', CorporateUnapproveView.as_view(), name='corporate-unapprove'),
+    path("corporate/infra-review/", CorporateInfraReviewGetView.as_view(), name="corporate-infra-review"),
+    path("corporate/infra-review/save/", CorporateInfraReviewSaveView.as_view(),  name="corporate-infra-review-save"),
+    path("corporate/scenario/update-basic/", AdminCorporateScenarioUpdateView.as_view(), name="corporate-scenario-update-basic"),
+    path("corporate/scenario/update-phases/", AdminCorporateScenarioPhaseUpdateView.as_view(), name="corporate-scenario-update-phases"),
+    path("corporate/scenario/update-flags/", AdminCorporateScenarioFlagUpdateView.as_view(), name="corporate-scenario-update-flags"),
+    path("corporate/scenario/update-milestones/", AdminCorporateScenarioMilestoneUpdateView.as_view(), name="corporate-scenario-update-milestones"),
+    path("corporate/scenario/detail/<str:scenario_id>/",AdminCorporateScenarioDetailView.as_view(),name="admin-corporate-scenario-detail",),
 ]
 
 urlpatterns = format_suffix_patterns(urlpatterns)

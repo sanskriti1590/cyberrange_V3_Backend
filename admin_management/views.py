@@ -1,7 +1,12 @@
-from rest_framework import generics, status
+from rest_framework import generics, status, serializers
 from rest_framework.response import Response
 from drf_yasg.utils import swagger_auto_schema
 
+from corporate_management.serializers import (
+    CorporateScenarioFlagCreateSerializer,
+    CorporateScenarioMilestoneCreateSerializer,
+    CorporateScenarioPhaseSerializer,
+)
 from user_management.permissions import  CustomIsAdmin
 from .serializers import (
     UserRetrieveAdminSerializer, 
@@ -35,11 +40,20 @@ from .serializers import (
     AddCorporateForUserSerializer,
     RemoveCTFScenarioForUserSerializer,
     GetCTFScenarioForUserSpecificSerializer,
-
     CorporateApproveSerializer,
     CorporateUnapproveSerializer,
+    CorporateInfraReviewGetSerializer,
+    CorporateInfraReviewSaveSerializer,
+    AdminCorporateScenarioUpdateSerializer,
+    AdminCorporateScenarioDetailSerializer,
 )
 
+from database_management.pymongo_client import (
+    corporate_scenario_collection,
+    milestone_data_collection,
+    flag_data_collection,
+    corporate_scenario_infra_collection,
+)
 
 class UserRegisterAdminView(generics.CreateAPIView):
     permission_classes = [CustomIsAdmin]
@@ -644,37 +658,50 @@ class GetCTFScenarioForUserSpecificView(generics.ListAPIView):
         return Response(queryset)
     
 
-class CorporateApproveView(generics.CreateAPIView):
+class CorporateApproveListView(generics.ListAPIView):
     permission_classes = [CustomIsAdmin]
     serializer_class = CorporateApproveSerializer
 
-    def get_queryset(self):
+    def list(self, request, *args, **kwargs):
         serializer = self.serializer_class()
-        queryset = serializer.get()
-        return queryset
+        data = serializer.get()
+        return Response(data, status=status.HTTP_200_OK)
+    
+class CorporateApproveCreateView(generics.CreateAPIView):
+    permission_classes = [CustomIsAdmin]
+    serializer_class = CorporateApproveSerializer
 
-    def get(self, request, *args, **kwargs):
-        queryset = self.get_queryset()
-
-        if 'errors' in queryset:
-            return Response(queryset, status=status.HTTP_400_BAD_REQUEST)
-        return Response(queryset, status=status.HTTP_200_OK)  
-
-    @swagger_auto_schema(
-        operation_summary="Approve a corporate",
-        operation_description="Endpoint to approve a corporate",
-        responses={201: "Corporate approval successful"},
-    )
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({"errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
-        if serializer.is_valid():
-            flag_submission = serializer.save()
-            response = serializer.data
-            return Response(response, status=status.HTTP_201_CREATED)
-        return Response({'errors': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.save(), status=status.HTTP_201_CREATED)
 
+class CorporateInfraReviewGetView(generics.ListAPIView):
+    permission_classes = [CustomIsAdmin]
+    serializer_class = CorporateInfraReviewGetSerializer
+
+    def list(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.query_params)
+        if not serializer.is_valid():
+            return Response({"errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(serializer.get_infra(), status=status.HTTP_200_OK)
     
+class CorporateInfraReviewSaveView(generics.CreateAPIView):
+    permission_classes = [CustomIsAdmin]
+    serializer_class = CorporateInfraReviewSaveSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data, context={"request": request})
+        if not serializer.is_valid():
+            return Response({"errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(serializer.save(), status=status.HTTP_201_CREATED)
+
+
+
 class CorporateUnapproveView(generics.CreateAPIView):
     permission_classes = [CustomIsAdmin]
     serializer_class = CorporateUnapproveSerializer
@@ -704,3 +731,128 @@ class CorporateUnapproveView(generics.CreateAPIView):
             response = serializer.data
             return Response(response, status=status.HTTP_201_CREATED)
         return Response({'errors': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+    
+class AdminCorporateScenarioUpdateView(generics.CreateAPIView):
+    permission_classes = [CustomIsAdmin]
+    serializer_class = AdminCorporateScenarioUpdateSerializer
+
+    @swagger_auto_schema(
+        operation_summary="Update corporate scenario (admin)",
+        operation_description="Admin can update scenario details, scoring, description",
+        responses={201: "Scenario updated successfully"},
+    )
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+
+        if serializer.is_valid():
+            response = serializer.save()
+            return Response(response, status=status.HTTP_201_CREATED)
+
+        return Response(
+            {"errors": serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+class AdminCorporateScenarioPhaseUpdateView(generics.CreateAPIView):
+    permission_classes = [CustomIsAdmin]
+    serializer_class = CorporateScenarioPhaseSerializer
+
+    @swagger_auto_schema(
+        operation_summary="Update scenario phases (admin)",
+        operation_description="Replace phases for a scenario",
+        responses={201: "Phases updated"},
+    )
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+
+        if serializer.is_valid():
+            response = serializer.save()
+            return Response(response, status=status.HTTP_201_CREATED)
+
+        return Response(
+            {"errors": serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+class AdminCorporateScenarioFlagUpdateView(generics.CreateAPIView):
+    permission_classes = [CustomIsAdmin]
+    serializer_class = CorporateScenarioFlagCreateSerializer
+
+    @swagger_auto_schema(
+        operation_summary="Update flags (admin)",
+        operation_description="Replace all flags for scenario",
+        responses={201: "Flags updated"},
+    )
+    def create(self, request, *args, **kwargs):
+        scenario_id = request.data.get("scenario_id")
+
+        if not scenario_id:
+            return Response(
+                {"error": "scenario_id required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 🔥 delete old flags
+        flag_data_collection.delete_many({"scenario_id": scenario_id})
+
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            response = serializer.save()
+            return Response(response, status=status.HTTP_201_CREATED)
+
+        return Response(
+            {"errors": serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+class AdminCorporateScenarioMilestoneUpdateView(generics.CreateAPIView):
+    permission_classes = [CustomIsAdmin]
+    serializer_class = CorporateScenarioMilestoneCreateSerializer
+
+    @swagger_auto_schema(
+        operation_summary="Update milestones (admin)",
+        operation_description="Replace all milestones for scenario",
+        responses={201: "Milestones updated"},
+    )
+    def create(self, request, *args, **kwargs):
+        scenario_id = request.data.get("scenario_id")
+
+        if not scenario_id:
+            return Response(
+                {"error": "scenario_id required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 🔥 delete old milestones
+        milestone_data_collection.delete_many({"scenario_id": scenario_id})
+
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            response = serializer.save()
+            return Response(response, status=status.HTTP_201_CREATED)
+
+        return Response(
+            {"errors": serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+class AdminCorporateScenarioDetailView(generics.GenericAPIView):
+    permission_classes = [CustomIsAdmin]
+    serializer_class = AdminCorporateScenarioDetailSerializer
+
+    @swagger_auto_schema(
+        operation_summary="Get corporate scenario detail (admin)",
+        operation_description="Fetch full corporate cyberdrill details for admin update",
+        responses={200: "Scenario detail fetched"},
+    )
+    def get(self, request, scenario_id):
+        serializer = self.get_serializer()
+        try:
+            data = serializer.get(scenario_id)
+        except serializers.ValidationError as e:
+            return Response(
+                {"errors": e.detail},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        return Response(data, status=status.HTTP_200_OK)
