@@ -1,0 +1,53 @@
+{
+  "strong": [
+    "Overall, the organisation demonstrates strong incident response readiness with reliable execution across teams.",
+    "The exercise indicates mature capability in response initiation, execution quality, and operational independence.",
+    "Readiness appears well established, with consistent outcomes and strong decision discipline across participants.",
+    "The organisation shows high preparedness to handle similar real-world incidents with confidence and speed.",
+    "Observed performance indicates strong maturity and alignment with expected BFSI incident response expectations.",
+    "The teams demonstrated reliable capability and consistent incident handling behaviour under pressure.",
+    "The exercise confirms strong readiness, with limited remediation required to sustain and refine capability.",
+    "Overall performance suggests the organisation can respond effectively within acceptable operational timelines.",
+    "The organisation demonstrated strong readiness and effective governance alignment throughout the exercise.",
+    "The response capability appears dependable, with consistent execution and clear decision-making ownership.",
+    "The organisation exhibits strong preparedness with minimal reliance on external guidance.",
+    "Incident handling maturity is strong and should be maintained through periodic testing and refinement.",
+    "The exercise validates effective readiness and disciplined execution across key incident response phases.",
+    "Overall readiness is high, indicating capability to handle incidents with reduced operational and regulatory risk.",
+    "The organisation’s readiness is strong and should be used as a benchmark for continued improvement."
+  ],
+  "moderate": [
+    "Overall, the organisation demonstrates moderate readiness with clear improvement required in critical phases.",
+    "The exercise indicates baseline capability, but response speed and governance alignment require strengthening.",
+    "Readiness is developing; outcomes vary across participants, reducing reliability during real incidents.",
+    "The organisation can respond, but performance is not yet consistently dependable under pressure.",
+    "Moderate maturity is observed; targeted improvements will reduce operational and regulatory exposure.",
+    "The exercise highlights partial readiness, with escalation and early response requiring focused remediation.",
+    "Overall readiness is moderate; further drills and playbook reinforcement are recommended for reliability.",
+    "The organisation has foundational capability, but key gaps should be addressed to meet BFSI expectations.",
+    "Performance indicates developing maturity; improvements in decision authority and escalation triggers are required.",
+    "The organisation demonstrates partial readiness; strengthening early response discipline will improve outcomes.",
+    "The exercise confirms baseline preparedness, but governance and consistency require improvement.",
+    "Overall readiness is moderate; improvements should focus on reducing delays and improving decision consistency.",
+    "The organisation’s readiness is developing; repeat exercises should validate improvement progress.",
+    "Moderate readiness is observed; remediation is required to reduce incident impact and reporting risk.",
+    "The organisation is partially prepared; strengthening escalation, governance, and early response is recommended."
+  ],
+  "weak": [
+    "Overall, the organisation demonstrates weak readiness and requires urgent remediation to reduce incident risk.",
+    "The exercise indicates significant gaps in response initiation, execution quality, and governance alignment.",
+    "Readiness is below expectations; performance suggests high operational and regulatory risk in real incidents.",
+    "The organisation is not yet prepared to respond reliably under incident pressure without substantial support.",
+    "Weak maturity is observed; immediate corrective action is required across multiple incident response phases.",
+    "The exercise highlights major preparedness gaps that could lead to delayed containment and extended recovery.",
+    "Overall readiness is weak; foundational improvements in playbooks, training, and governance are required.",
+    "The organisation shows limited capability to respond consistently, indicating material incident risk exposure.",
+    "Performance indicates urgent need for role clarity, escalation triggers, and decision authority reinforcement.",
+    "The organisation’s readiness is weak; sustained training and repeated validation exercises are required.",
+    "The exercise indicates that response outcomes are not reliable, increasing potential business impact.",
+    "Weak readiness suggests the organisation may struggle to meet regulatory expectations during real incidents.",
+    "The organisation requires urgent remediation to improve incident response speed, quality, and accountability.",
+    "Overall maturity is early; significant improvements are required for BFSI-grade incident readiness.",
+    "The exercise confirms weak preparedness; immediate remediation should be prioritised to reduce risk."
+  ]
+}

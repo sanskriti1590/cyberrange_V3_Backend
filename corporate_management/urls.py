@@ -31,7 +31,8 @@ urlpatterns = [
 
     path('game/based-on-category/<slug:category_id>/', CorporateByCategoryIdView.as_view(), name='corporate-game-list'),
 
-    path('scenario/generate-report/<slug:active_scenario_id>/<slug:user_id>/', CorporateGenerateScenarioReportView.as_view(), name='corporate-report-generate'),
+    path('scenario/report/executive/<slug:archive_scenario_id>/<slug:team_group>/', CorporateExecutiveScenarioReportView.as_view(), name='corporate-executive-report'),
+    path('scenario/report/evidence/<slug:archive_scenario_id>/<slug:team_group>/', CorporateScenarioEvidenceReportView.as_view(), name='corporate-evidence-report'),
     path('scenario/show-reports/<slug:user_id>/',CorporateUserReportView.as_view(), name='corporate-user-report'),
     path('scenario/report/<slug:participant_id>/<slug:user_id>/',CorporateUserReportApi.as_view(), name='corporate-report'),
     path("scenario/active_participants/<slug:active_scenario_id>/",ActiveParticipantView.as_view(),name="active_participants"), 

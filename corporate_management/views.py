@@ -29,7 +29,8 @@ from .serializers import (
     CorporateActiveScenarioDeleteSerializer,
     CorporateScenarioModeratorConsoleDetailSerializer,
     CorporateByCategoryIdSerializer,
-    CorporateGenerateScenarioReportSerializer,
+    CorporateExecutiveScenarioReportSerializer,
+    CorporateScenarioEvidenceReportSerializer,
     CorporateUserReportSerializer,
     ActiveScenarioParticipantsSerializer,
     CorporateScenarioAchiversSerializer,
@@ -435,24 +436,47 @@ class CorporateByCategoryIdView(generics.ListAPIView):
         
         return Response(queryset, status=status.HTTP_200_OK)
     
+class CorporateExecutiveScenarioReportView(generics.ListAPIView):
+    permission_classes = [CustomIsAuthenticated]
+    serializer_class = CorporateExecutiveScenarioReportSerializer
 
-class CorporateGenerateScenarioReportView(generics.ListAPIView):
-    # permission_classes=[CustomIsAuthenticated]
-    serializer_class = CorporateGenerateScenarioReportSerializer
     def get_queryset(self):
-        active_scenario_id = self.kwargs['active_scenario_id']
-        participant_id = self.kwargs['user_id']
-        return self.serializer_class().get(active_scenario_id,participant_id)
-    def get(self, request, *args, **kwargs):
-        queryset = self.get_queryset()
+        archive_scenario_id = self.kwargs["archive_scenario_id"]
+        team_group = self.kwargs["team_group"]
 
-        try :
-            if queryset.headers.get('Content-Type') == "application/pdf":
-                return queryset
-            else:
-                return Response(queryset, status=status.HTTP_400_BAD_REQUEST)
-        except:
-            return Response(queryset, status=status.HTTP_400_BAD_REQUEST)
+        return self.serializer_class().get(
+            archive_scenario_id,
+            team_group
+        )
+
+    def get(self, request, *args, **kwargs):
+        data = self.get_queryset()
+
+        if "errors" in data:
+            return Response(data, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+class CorporateScenarioEvidenceReportView(generics.ListAPIView):
+    permission_classes = [CustomIsAuthenticated]
+    serializer_class = CorporateScenarioEvidenceReportSerializer
+
+    def get_queryset(self):
+        archive_scenario_id = self.kwargs["archive_scenario_id"]
+        team_group = self.kwargs["team_group"]
+
+        return self.serializer_class().get(
+            archive_scenario_id,
+            team_group
+        )
+
+    def get(self, request, *args, **kwargs):
+        data = self.get_queryset()
+
+        if "errors" in data:
+            return Response(data, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(data, status=status.HTTP_200_OK)
         
 class CorporateUserReportView(generics.ListAPIView):
     permission_classes=[CustomIsAuthenticated]

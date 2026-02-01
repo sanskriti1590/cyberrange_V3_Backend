@@ -5,6 +5,11 @@ from celery import shared_task
 from notification_management.utils import send_notification
 from fpdf  import FPDF
 import pandas as pd
+import json
+import random
+from pathlib import Path
+
+from django.conf import settings
 from core.utils import generate_random_string
 from database_management.pymongo_client import (
     corporate_scenario_collection,   
@@ -37,6 +42,9 @@ from database_management.pymongo_client import notification_collection,participa
 from core.utils import generate_random_string
 from channels.layers import get_channel_layer
 
+NARRATIVE_PATH = Path(
+    settings.BASE_DIR / "corporate_management" / "report_narratives"
+)
 class PDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 16)
@@ -788,6 +796,7 @@ def end_corporate_game(active_scenario):
 
 # report data 
 
+
 def report_data(participant_id,user_id):
        
         user_details = user_collection.find_one({"user_id": user_id})
@@ -928,3 +937,342 @@ def build_channel_key(
         f"::TG_{team_group}"
         f"::SCOPE_{scope}"
     )
+def parse_dt(value):
+    if value is None:
+        return None
+
+    if isinstance(value, datetime.datetime):
+        return value
+
+    if isinstance(value, dict) and "$date" in value:
+        value = value["$date"]
+
+    try:
+        s = str(value)
+        if s.endswith("Z"):
+            s = s.replace("Z", "+00:00")
+        return datetime.datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def minutes_between(a, b):
+    da = parse_dt(a)
+    db = parse_dt(b)
+    if not da or not db:
+        return None
+    return round((db - da).total_seconds() / 60.0, 2)
+
+
+def normalize_time(minutes):
+    if minutes is None:
+        return None
+    return {
+        "minutes": round(minutes, 2),
+        "hours": round(minutes / 60, 2)
+    }
+
+
+# ─────────────────────────────────────────────
+# Item timing
+# ─────────────────────────────────────────────
+
+def time_to_first_action(item):
+    assigned_at = item.get("assigned_at") or item.get("first_visible_at")
+    if not assigned_at:
+        return None
+
+    action_time = item.get("achieved_at") or item.get("submitted_at")
+    if not action_time:
+        return None
+
+    return minutes_between(assigned_at, action_time)
+
+
+def approval_delay(item):
+    achieved_at = item.get("achieved_at") or item.get("submitted_at")
+    approved_at = item.get("approved_at")
+    if not achieved_at or not approved_at:
+        return None
+    return minutes_between(achieved_at, approved_at)
+
+
+# ─────────────────────────────────────────────
+# Scoring helpers
+# ─────────────────────────────────────────────
+
+def extract_score_meta(item):
+    sm = item.get("score_meta")
+    if not isinstance(sm, dict):
+        sm = {}
+
+    base = sm.get("base_score")
+    if base is None:
+        base = item.get("score") or item.get("base_score") or 0
+
+    final = sm.get("final_score")
+    if final is None:
+        final = item.get("obtained_score") or 0
+
+    return {
+        "type": sm.get("type", "standard"),
+        "base_score": base,
+        "final_score": final,
+        "hint_penalty": sm.get("hint_penalty", item.get("hint_penalty", 0) or 0),
+        "decay_penalty": sm.get("decay_penalty", 0),
+    }
+
+
+# ─────────────────────────────────────────────
+# Readiness logic
+# ─────────────────────────────────────────────
+
+def classify_overall_readiness(score_ratio):
+    if score_ratio >= 0.75:
+        return "Strong"
+    if score_ratio >= 0.5:
+        return "Moderate"
+    return "Weak"
+
+
+# ─────────────────────────────────────────────
+# Narrative engine
+# ─────────────────────────────────────────────
+
+def pick_narrative(file_name, key):
+    path = NARRATIVE_PATH / file_name
+    if not path.exists():
+        return None
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    options = data.get(key, [])
+    return random.choice(options) if options else None
+
+
+def pick_final_conclusion(score_ratio):
+    key = "strong" if score_ratio >= 0.75 else "moderate" if score_ratio >= 0.5 else "weak"
+    return pick_narrative("final_conclusion.json", key)
+
+
+def build_executive_narrative(quant):
+    if not quant or not quant.get("base_score"):
+        return ["Insufficient data available to generate executive assessment."]
+
+    lines = []
+
+    avg_tfa = quant.get("average_time_to_first_action_min")
+    if avg_tfa is not None:
+        key = "fast" if avg_tfa <= 10 else "moderate" if avg_tfa <= 60 else "slow"
+        line = pick_narrative("response_time.json", key)
+        if line:
+            lines.append(line)
+
+    score_ratio = quant.get("score_ratio", 0)
+    key = "strong" if score_ratio >= 0.75 else "moderate" if score_ratio >= 0.5 else "weak"
+    line = pick_narrative("score_quality.json", key)
+    if line:
+        lines.append(line)
+
+    hint_pct = quant.get("hint_utilisation_percent", 0)
+    key = "high" if hint_pct >= 50 else "medium" if hint_pct >= 20 else "low"
+    line = pick_narrative("hint_dependency.json", key)
+    if line:
+        lines.append(line)
+
+    return lines
+
+
+# ─────────────────────────────────────────────
+# Quantitative aggregation
+# ─────────────────────────────────────────────
+
+def compute_participant_quantitative(participant):
+    base = final = hint_pen = decay_pen = 0
+    tfa, appr = [], []
+
+    items = participant.get("flag_data", []) + participant.get("milestone_data", [])
+
+    for it in items:
+        sm = extract_score_meta(it)
+        base += sm["base_score"]
+        final += sm["final_score"]
+        hint_pen += sm["hint_penalty"]
+        decay_pen += sm["decay_penalty"]
+
+        x = time_to_first_action(it)
+        if x is not None:
+            tfa.append(x)
+
+        y = approval_delay(it)
+        if y is not None:
+            appr.append(y)
+
+    ratio = final / base if base else 0
+
+    return {
+        "base_score": base,
+        "final_score": final,
+        "score_ratio": round(ratio, 2),
+        "overall_readiness": classify_overall_readiness(ratio),
+        "average_time_to_first_action_min": round(sum(tfa) / len(tfa), 2) if tfa else None,
+        "average_approval_delay_min": round(sum(appr) / len(appr), 2) if appr else None,
+        "total_hint_penalty": hint_pen,
+        "total_decay_penalty": decay_pen,
+    }
+
+
+def collect_team_evidence(participants):
+    evidence = []
+
+    for p in participants:
+        for it in p.get("flag_data", []) + p.get("milestone_data", []):
+            evidence.append({
+                "phase_id": it.get("phase_id"),
+                "status": (
+                    "Approved" if it.get("approved_at")
+                    else "Submitted" if it.get("submitted_at")
+                    else "Not Acted"
+                ),
+                "time_to_first_action_min": time_to_first_action(it),
+                "approval_delay_min": approval_delay(it),
+                "score_meta": extract_score_meta(it)
+            })
+
+    return evidence
+
+
+def compute_phase_analysis(evidence_items, phase_lookup):
+    phase_map = {}
+
+    for it in evidence_items:
+        pid = it.get("phase_id")
+        if not pid:
+            continue
+        phase_map.setdefault(pid, []).append(it)
+
+    results = []
+
+    for pid, items in phase_map.items():
+        base = sum(i["score_meta"]["base_score"] for i in items)
+        final = sum(i["score_meta"]["final_score"] for i in items)
+        not_acted = sum(1 for i in items if i["status"] == "Not Acted")
+
+        tfa = [i["time_to_first_action_min"] for i in items if i["time_to_first_action_min"]]
+        appr = [i["approval_delay_min"] for i in items if i["approval_delay_min"]]
+
+        ratio = final / base if base else 0
+
+        gap = (
+            "High" if not_acted > 0 or ratio < 0.6
+            else "Moderate" if ratio < 0.8
+            else "Low"
+        )
+
+        results.append({
+            "phase": {
+                "id": pid,
+                "name": phase_lookup.get(pid, {}).get("name", "Unknown Phase")
+            },
+            "metrics": {
+                "items": len(items),
+                "approved": sum(1 for i in items if i["status"] == "Approved"),
+                "not_acted": not_acted,
+                "base_score": base,
+                "final_score": final,
+                "score_ratio": round(ratio, 2),
+                "avg_time_to_first_action_hr": round(sum(tfa) / len(tfa) / 60, 2) if tfa else None,
+                "avg_approval_delay_hr": round(sum(appr) / len(appr) / 60, 2) if appr else None,
+                "phase_gap": gap
+            }
+        })
+
+    return results
+
+
+def compute_team_quantitative(participants, start=None, end=None):
+    items = []
+    for p in participants:
+        items += p.get("flag_data", []) + p.get("milestone_data", [])
+
+    base = final = hint_pen = decay_pen = 0
+    tfa, appr = [], []
+    hint_used = hint_total = 0
+
+    for it in items:
+        sm = extract_score_meta(it)
+        base += sm["base_score"]
+        final += sm["final_score"]
+        hint_pen += sm["hint_penalty"]
+        decay_pen += sm["decay_penalty"]
+
+        hint_total += 1
+        if it.get("hint_used"):
+            hint_used += 1
+
+        x = time_to_first_action(it)
+        if x is not None:
+            tfa.append(x)
+
+        y = approval_delay(it)
+        if y is not None:
+            appr.append(y)
+
+    ratio = final / base if base else 0
+    duration = minutes_between(start, end) if start and end else None
+
+    return {
+        "team_duration_min": duration,
+        "base_score": base,
+        "final_score": final,
+        "score_ratio": round(ratio, 2),
+        "overall_readiness": classify_overall_readiness(ratio),
+        "hint_utilisation_percent": round((hint_used / hint_total) * 100, 2) if hint_total else 0,
+        "total_hint_penalty": hint_pen,
+        "total_decay_penalty": decay_pen,
+        "average_time_to_first_action_min": round(sum(tfa) / len(tfa), 2) if tfa else None,
+        "average_approval_delay_min": round(sum(appr) / len(appr), 2) if appr else None,
+    }
+
+def build_phase_lookup(scenario_meta):
+    """
+    Builds: { phase_id -> phase_object }
+    """
+    phases = scenario_meta.get("phases", []) or []
+
+    lookup = {}
+    for p in phases:
+        pid = p.get("id")
+        if pid:
+            lookup[pid] = {
+                "id": pid,
+                "name": p.get("phase_name") or p.get("name"),
+            }
+
+    return lookup
+
+def resolve_item_meta(item):
+    if item.get("flag_id"):
+        doc = flag_collection.find_one(
+            {"id": item["flag_id"]},
+            {"_id": 0, "id": 1, "title": 1}
+        )
+        return {
+            "type": "flag",
+            "id": item["flag_id"],
+            "title": doc.get("title") if doc else "Unknown Flag"
+        }
+
+    if item.get("milestone_id"):
+        doc = milestone_collection.find_one(
+            {"id": item["milestone_id"]},
+            {"_id": 0, "id": 1, "title": 1}
+        )
+        return {
+            "type": "milestone",
+            "id": item["milestone_id"],
+            "title": doc.get("title") if doc else "Unknown Milestone"
+        }
+
+    return None

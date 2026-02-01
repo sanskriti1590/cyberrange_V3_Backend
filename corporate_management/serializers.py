@@ -37,13 +37,7 @@ from database_management.pymongo_client import (
     active_scenario_collection,
     scenario_chat_messages_collection,
 )
-from .utils import (add_scenario_details,
-                    start_corporate_game,
-                    end_corporate_game,
-                    generate_report_for_participant,
-                    PDF,
-                    report_data,
-                    build_channel_key,)
+from .utils import *
 
 def _sanitize_meta(meta):
     if meta is None:
@@ -1104,6 +1098,8 @@ class CorporateScenarioConsoleSerializer(serializers.Serializer):
                     "index": flag_db.get("index"),
                     "score": flag_db.get("score") if not locked else "",
                     "question": flag_db.get("question") if not locked else "",
+                    "show_placeholder": flag_db.get("show_placeholder", False),
+                    "placeholder": flag_db.get("placeholder", ""),
                     "locked": locked,
                     "locked_label": "Locked by Admin" if locked else "",
                     "is_correct": f.get("is_correct", False),
@@ -1154,7 +1150,8 @@ class CorporateScenarioConsoleSerializer(serializers.Serializer):
                     "milestone_name": mdb.get("name") if not locked else "",
                     "milestone_description": mdb.get("description") if not locked else "",
                     "milestone_score": mdb.get("score") if not locked else "",
-
+                    "show_placeholder": mdb.get("show_placeholder", False),
+                    "placeholder": mdb.get("placeholder", ""),
                     # state
                     "locked": locked,
                     "locked_label": "Locked by Admin" if locked else "",
@@ -2595,6 +2592,7 @@ class CorporateScenarioModeratorConsoleDetailSerializer(serializers.Serializer):
         participant = validated_data["participant"]
         scenario = validated_data["scenario"]
 
+        # ---------- BUILD ITEMS ----------
         phase_lookup = {
             p["id"]: p.get("phase_name") or p.get("name") or "Phase"
             for p in scenario.get("phases", [])
@@ -2637,19 +2635,31 @@ class CorporateScenarioModeratorConsoleDetailSerializer(serializers.Serializer):
                 "locked_by_admin": md.get("locked_by_admin", False),
             })
 
+        # ---------- FETCH CONSOLE URL (🔥 FIX) ----------
+        console_url = None
+        instance_id = participant.get("instance_id")
+
+        if instance_id:
+            try:
+                instance = get_cloud_instance(instance_id)
+                console = get_instance_console(instance)
+                console_url = getattr(console, "url", None)
+            except Exception:
+                console_url = None
+
+        # ---------- FINAL RESPONSE ----------
         return {
             "scenario_type": "MILESTONE",
             "active_scenario_id": validated_data["active_scenario"]["id"],
             "participant_id": participant["user_id"],
             "team": participant["team"],
-            "console_url": None,
+            "console_url": console_url,   # ✅ FIXED
             "itemsByPhase": items_by_phase,
             "total_milestone_count": sum(len(v["items"]) for v in items_by_phase.values()),
             "approved_milestone_count": sum(
                 1 for v in items_by_phase.values() for m in v["items"] if m["is_approved"]
             ),
         }
-
 
 class CorporateByCategoryIdSerializer(serializers.Serializer):
     def get(self, category_id, user_id):
@@ -2800,52 +2810,183 @@ class CorporateByCategoryIdSerializer(serializers.Serializer):
 
         return scenario_category_detail_list
 
+##report data
 
-class CorporateGenerateScenarioReportSerializer(serializers.Serializer):
+class CorporateExecutiveScenarioReportSerializer(serializers.Serializer):
 
-    def get(self, active_scenario_id, participant_id):
-        scenario = archive_scenario_collection.find_one({"id": active_scenario_id})
-        if not scenario:
-            # raise serializers.ValidationError("Active scenario not found")
-            return {"errors": "Active scenario not found"}
+    def get(self, archive_scenario_id, team_group):
 
-        # Fetch scenario details from the scenario_collection
-        scenario_details = corporate_scenario_collection.find_one({"id": scenario['scenario_id']})
-        if not scenario_details:
-            # raise serializers.ValidationError("Scenario details not found")
-            return {"errors": "Scenario details not found"}
-
-        pdf = PDF()
-        pdf.add_page()
-
-        add_scenario_details(pdf, scenario_details)
-        # Scenario Report Heading
-        pdf.set_font('Arial', 'B', 16)
-        # pdf.cell(0, 10, 'Scenario Report', 0, 1, 'C')
-        pdf.ln(10)
-
-        # Adjusting the participant IDs dict based on whether a specific participant_id is provided
-        participant_ids = scenario['participant_data']
-
-        if participant_id == scenario['started_by']:
-            for user_id, p_data_id in participant_ids.items():
-                generate_report_for_participant(pdf, user_id, p_data_id)
-        else:
-            if participant_id in participant_ids:
-                generate_report_for_participant(pdf, participant_id, participant_ids[participant_id])
-            else:
-                # raise serializers.ValidationError("Participant ID not found in active scenario")
-                return {"errors": "Participant ID not found in active scenario"}
-
-        pdf_output = pdf.output(dest='S').encode('latin1')
-        return FileResponse(
-            io.BytesIO(pdf_output),
-            filename='scenario_report.pdf',
-            as_attachment=True,
-            content_type='application/pdf'
+        scenario = archive_scenario_collection.find_one(
+            {"id": archive_scenario_id, "end_time": {"$ne": None}},
+            {"_id": 0}
         )
 
+        if not scenario:
+            return {"errors": "Scenario has not ended or archive record not found"}
 
+        scenario_meta = corporate_scenario_collection.find_one(
+            {"id": scenario.get("scenario_id")},
+            {"_id": 0}
+        ) or {}
+
+        # ✅ BUILD PHASE LOOKUP
+        phase_lookup = build_phase_lookup(scenario_meta)
+
+        team_participants = []
+        player_summaries = []
+
+        for user_id, pid in (scenario.get("participant_data") or {}).items():
+
+            participant = archive_participant_collection.find_one(
+                {"id": pid},
+                {"_id": 0}
+            )
+
+            if not participant or participant.get("team_group") != team_group:
+                continue
+
+            team_participants.append(participant)
+
+            user = user_collection.find_one(
+                {"user_id": user_id},
+                {"_id": 0, "user_full_name": 1, "email": 1}
+            ) or {}
+
+            player_summaries.append({
+                "user_id": user_id,
+                "participant_id": pid,
+                "name": user.get("user_full_name", user_id),
+                "email": user.get("email"),
+                "team": participant.get("team"),
+                "team_group": participant.get("team_group"),
+                "metrics": compute_participant_quantitative(participant)
+            })
+
+        team_quant = compute_team_quantitative(
+            team_participants,
+            scenario.get("start_time"),
+            scenario.get("end_time")
+        )
+
+        evidence = collect_team_evidence(team_participants)
+
+        # ✅ PASS PHASE LOOKUP
+        phase_analysis = compute_phase_analysis(evidence, phase_lookup)
+
+        return {
+            "scenario_meta": {
+                "archive_scenario_id": archive_scenario_id,
+                "scenario_id": scenario.get("scenario_id"),
+                "name": scenario_meta.get("name"),
+                "severity": scenario_meta.get("severity"),
+                "scoring_type": scenario_meta.get("scoring_type")
+            },
+            "team": team_group,
+            "team_overview": {
+                "players": player_summaries,
+                "team_metrics": team_quant
+            },
+            "phase_analysis": {
+                "phases": phase_analysis
+            },
+            "executive_assessment": {
+                "overall_readiness": team_quant.get("overall_readiness"),
+                "summary_lines": build_executive_narrative(team_quant),
+                "final_conclusion": pick_final_conclusion(
+                    team_quant.get("score_ratio", 0)
+                )
+            }
+        }
+    
+class CorporateScenarioEvidenceReportSerializer(serializers.Serializer):
+
+    def get(self, archive_scenario_id, team_group):
+
+        scenario = archive_scenario_collection.find_one(
+            {"id": archive_scenario_id, "end_time": {"$ne": None}},
+            {"_id": 0}
+        )
+
+        if not scenario:
+            return {"errors": "Scenario has not ended or archive record not found"}
+
+        # ✅ FETCH SCENARIO META
+        scenario_meta = corporate_scenario_collection.find_one(
+            {"id": scenario.get("scenario_id")},
+            {"_id": 0}
+        ) or {}
+
+        # ✅ BUILD PHASE LOOKUP
+        phase_lookup = build_phase_lookup(scenario_meta)
+
+        players = []
+
+        for user_id, participant_id in (scenario.get("participant_data") or {}).items():
+
+            participant = archive_participant_collection.find_one(
+                {"id": participant_id},
+                {"_id": 0}
+            )
+
+            if not participant or participant.get("team_group") != team_group:
+                continue
+
+            user = user_collection.find_one(
+                {"user_id": user_id},
+                {"_id": 0, "user_full_name": 1, "email": 1}
+            ) or {}
+
+            submissions = []
+
+            for item in participant.get("flag_data", []) + participant.get("milestone_data", []):
+
+                phase_id = item.get("phase_id")
+                phase = phase_lookup.get(
+                    phase_id,
+                    {"id": phase_id, "name": "Unknown Phase"}
+                )
+
+                submissions.append({
+                    "item": {
+                        "id": item.get("flag_id") or item.get("milestone_id"),
+                        "type": "flag" if item.get("flag_id") else "milestone"
+                    },
+                    "phase": {
+                        "id": phase["id"],
+                        "name": phase["name"]
+                    },
+                    "status": (
+                        "Approved" if item.get("approved_at")
+                        else "Submitted" if item.get("submitted_at")
+                        else "Not Acted"
+                    ),
+                    "time_to_first_action": normalize_time(
+                        time_to_first_action(item)
+                    ),
+                    "approval_delay": normalize_time(
+                        approval_delay(item)
+                    ),
+                    "retires": item.get("retires", 0),
+                    "score_meta": extract_score_meta(item),
+                    "submitted_text": item.get("submitted_text"),
+                    "evidence_files": item.get("evidence_files", [])
+                })
+
+            players.append({
+                "user_id": user_id,
+                "participant_id": participant_id,
+                "name": user.get("user_full_name", user_id),
+                "email": user.get("email"),
+                "team": participant.get("team"),
+                "team_group": participant.get("team_group"),
+                "submissions": submissions
+            })
+
+        return {
+            "team": team_group,
+            "players": players
+        }
+    
 class CorporateUserReportSerializer(serializers.Serializer):
     def get(self, user_id):
 
