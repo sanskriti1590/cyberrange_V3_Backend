@@ -15,6 +15,7 @@ from .serializers import (
     CorporateScenarioInfraSerializer,
     CorporateScenarioListSerializer,
     CorporateScenarioDetailSerializer,
+    CorporateScenarioWalkthroughCreateSerializer,
     CorporateScenarioWalkthroughListSerializer,
     CorporateScenarioStartSerializer,
     CorporateScenarioConsoleSerializer,
@@ -225,31 +226,45 @@ class CorporateScenarioConsoleView(generics.RetrieveAPIView):
         return Response(queryset, status=status.HTTP_200_OK)
     
 
+class CorporateScenarioWalkthroughCreateView(APIView):
+    permission_classes = [CustomIsAuthenticated]
+
+    def post(self, request):
+        serializer = CorporateScenarioWalkthroughCreateSerializer(
+            data=request.data,
+            context={"request": request}
+        )
+
+        if not serializer.is_valid():
+            return Response(
+                serializer.errors,
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        result = serializer.save()
+
+        return Response(
+            result,
+            status=status.HTTP_201_CREATED
+        )
+    
 class CorporateScenarioWalkthroughListView(APIView):
     permission_classes = [CustomIsAuthenticated]
 
     def get(self, request):
         scenario_id = request.query_params.get("scenario_id")
         team = request.query_params.get("team")
-        phase_ids = request.query_params.getlist("phase_ids")
 
-        if not scenario_id or not team or not phase_ids:
+        if not scenario_id or not team:
             return Response(
-                {"errors": "scenario_id, team, and phase_ids are required"},
+                {"errors": "scenario_id and team required"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         serializer = CorporateScenarioWalkthroughListSerializer()
-        docs = serializer.get(
-            scenario_id=scenario_id,
-            team=team,
-            phase_ids=phase_ids
-        )
+        files = serializer.get(scenario_id, team)
 
-        return Response(
-            {"walkthroughs": docs},
-            status=status.HTTP_200_OK
-        )
+        return Response({"walkthroughs": files})
     
 class CorporateScenarioSubmitFlagView(generics.CreateAPIView):
     permission_classes = [CustomIsAuthenticated]

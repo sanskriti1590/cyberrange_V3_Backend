@@ -6,8 +6,9 @@ from .views import (
     UserRegisterAdminView,
     UserListAdminView,
     UserRetrieveAdminView,
-    UserRemoveAdminView,
-
+    BulkUserUploadView,
+    UserDeleteAdminView,
+    
     CTFCategoryListView,
     CTFCategoryCreateView,
     CTFCategoryUpdateView,
@@ -55,8 +56,8 @@ urlpatterns = [
     path('user/register/', UserRegisterAdminView.as_view(), name='user-register'),
     path('user/<slug:user_id>/', UserRetrieveAdminView.as_view(), name='user-retrieve'),
     path('user/update/<slug:user_id>/', UserUpdateAdminView.as_view(), name='user-update'),
-    path('user/remove/<slug:pk>/', UserRemoveAdminView.as_view(), name='remove-user'),
-
+    path("users/bulk-upload/", BulkUserUploadView.as_view()),
+    path("user/delete/<str:user_id>/", UserDeleteAdminView.as_view()),
     path('ctf/category/list/', CTFCategoryListView.as_view(), name='ctf-category-list'),
     path('ctf/category/create/', CTFCategoryCreateView.as_view(), name='ctf-category-create'),
     path('ctf/category/update/<slug:ctf_category_id>/', CTFCategoryUpdateView.as_view(), name='ctf-category-update'),

@@ -425,11 +425,10 @@ class CorporateScenarioMilestoneCreateSerializer(serializers.Serializer):
         return {"milestones": created}
     
 
-
 class CorporateScenarioWalkthroughCreateSerializer(serializers.Serializer):
     scenario_id = serializers.CharField()
     team = serializers.ChoiceField(choices=["RED", "BLUE", "PURPLE", "YELLOW"])
-    phase_id = serializers.CharField()
+    phase_id = serializers.CharField(required=False)
     files = serializers.ListField(
         child=serializers.FileField(validators=[validate_file_size]),
         allow_empty=False
@@ -437,65 +436,80 @@ class CorporateScenarioWalkthroughCreateSerializer(serializers.Serializer):
 
     def validate(self, data):
         scenario = corporate_scenario_collection.find_one(
-            {"id": data["scenario_id"]}, {"_id": 0}
+            {"id": data["scenario_id"]}, {"_id": 1}
         )
         if not scenario:
             raise serializers.ValidationError("Invalid Scenario ID")
-
-        phase_ids = [p["id"] for p in scenario.get("phases", [])]
-        if data["phase_id"] not in phase_ids:
-            raise serializers.ValidationError("Invalid Phase ID")
-
         return data
 
     def create(self, validated_data):
         scenario_id = validated_data["scenario_id"]
         team = validated_data["team"]
-        phase_id = validated_data["phase_id"]
         files = validated_data["files"]
 
-        created = []
-        now = datetime.datetime.now()
+        team_key_map = {
+            "RED": "red_team",
+            "BLUE": "blue_team",
+            "PURPLE": "purple_team",
+            "YELLOW": "yellow_team",
+        }
+        team_key = team_key_map[team]
+
+        now = datetime.datetime.utcnow()
+
+        base_dir = "static/documents/scenario_walkthroughs"
+        os.makedirs(base_dir, exist_ok=True)
+
+        uploaded_urls = []
 
         for f in files:
-            if not f.name.lower().endswith(("pdf",)):
+            if not f.name.lower().endswith(".pdf"):
                 raise serializers.ValidationError("Only PDF allowed")
 
-            name, ext = os.path.splitext(f.name)
             rnd = generate_random_string("DOC", 20)
-            new_name = f"{scenario_id}_{team}_{phase_id}_{rnd}{ext}"
+            _, ext = os.path.splitext(f.name)
+            new_name = f"{scenario_id}_{team}_{rnd}{ext}"
+            path = f"{base_dir}/{new_name}"
 
-            path = f"static/documents/scenario_walkthroughs/{new_name}"
             with open(path, "wb+") as dst:
                 for chunk in f.chunks():
                     dst.write(chunk)
 
-            doc = {
-                "id": generate_random_string("DOC", 16),
-                "scenario_id": scenario_id,
-                "team": team,
-                "phase_id": phase_id,
-                "file_url": f"{API_URL}/{path}",
-                "created_at": now
-            }
-            scenario_walkthrough_collection.insert_one(doc)
-            created.append(doc)
+            uploaded_urls.append(f"{API_URL}/{path}")
 
-        return {"walkthroughs": created}
+        # ✅ ONLY update scenario.files_data
+        corporate_scenario_collection.update_one(
+            {"id": scenario_id},
+            {
+                "$push": {
+                    f"files_data.{team_key}": {"$each": uploaded_urls}
+                },
+                "$set": {"updated_at": now},
+            }
+        )
+
+        return {
+            "team": team,
+            "uploaded_files": uploaded_urls,
+        }
     
 class CorporateScenarioWalkthroughListSerializer(serializers.Serializer):
-    def get(self, scenario_id, team, phase_ids):
-        docs = list(
-            scenario_walkthrough_collection.find(
-                {
-                    "scenario_id": scenario_id,
-                    "team": team,
-                    "phase_id": {"$in": phase_ids}
-                },
-                {"_id": 0}
-            )
+    def get(self, scenario_id, team):
+        scenario = corporate_scenario_collection.find_one(
+            {"id": scenario_id}, {"_id": 0, "files_data": 1}
         )
-        return docs
+        if not scenario:
+            return []
+
+        team_key_map = {
+            "RED": "red_team",
+            "BLUE": "blue_team",
+            "PURPLE": "purple_team",
+            "YELLOW": "yellow_team",
+        }
+        team_key = team_key_map.get(team)
+
+        return scenario.get("files_data", {}).get(team_key, [])
     
 class NetworkSerializer(serializers.Serializer):
     network_name = serializers.CharField(max_length=50, min_length=3)

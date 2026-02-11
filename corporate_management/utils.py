@@ -82,27 +82,6 @@ class PDF(FPDF):
             self.set_fill_color(255, 0, 0)  # Red color
         self.ellipse(x - radius, y - radius, 2 * radius, 2 * radius, style='F')
 
-# Decay scoring data 
-def compute_decay_score(base_score, start_time, submit_time, config):
-    """
-    Logarithmic decay scoring
-    """
-    if not start_time or not submit_time:
-        return base_score
-
-    minutes = max(
-        0,
-        int((submit_time - start_time).total_seconds() / 60)
-    )
-
-    scale = float(config.get("decay_scale", 1.0))
-    min_factor = float(config.get("min_factor", 0.2))
-    max_factor = float(config.get("max_factor", 1.0))
-
-    factor = 1 / (1 + scale * math.log(1 + minutes))
-    factor = max(min_factor, min(max_factor, factor))
-
-    return int(round(base_score * factor))
 
 
 def add_scenario_details(pdf, scenario_details):
@@ -675,74 +654,6 @@ def start_corporate_game(validated_data):
 
 def _now():
     return datetime.datetime.now()
-@shared_task
-def compute_decay_score(base_score: int, scoring_config: dict, *,
-                        start_time: datetime.datetime,
-                        first_visible_at: datetime.datetime | None,
-                        attempts: int,
-                        event_time: datetime.datetime | None = None) -> tuple[int, dict]:
-    """
-    Returns (awarded_score, meta)
-    """
-    if not scoring_config or scoring_config.get("type") != "decay":
-        return base_score, {"type": "standard"}
-
-    decay = scoring_config.get("decay") or {}
-    mode = decay.get("mode", "time")
-
-    event_time = event_time or _now()
-    min_score = int(decay.get("min_score", 0))
-
-    # Decide what time anchor you want:
-    # - scenario start_time (simple)
-    # - or first_visible_at per flag/milestone (more fair if you lock/unlock phases)
-    anchor = first_visible_at or start_time
-
-    if mode == "time":
-        start_after = int(decay.get("start_after_minutes", 0))
-        interval_minutes = max(1, int(decay.get("interval_minutes", 1)))
-        penalty_per_interval = int(decay.get("penalty_per_interval", 0))
-
-        minutes = (event_time - anchor).total_seconds() / 60.0
-        late = max(0.0, minutes - start_after)
-        intervals = int(math.floor(late / interval_minutes))
-        penalty = intervals * penalty_per_interval
-        awarded = max(min_score, int(base_score) - int(penalty))
-
-        return awarded, {
-            "type": "decay",
-            "mode": "time",
-            "anchor": anchor,
-            "minutes_since_anchor": minutes,
-            "intervals": intervals,
-            "penalty": penalty,
-            "base_score": base_score,
-            "min_score": min_score
-        }
-
-    if mode == "attempt":
-        # Example: penalty grows with attempts
-        # You can later add: start_after_attempts, penalty_per_attempt
-        penalty_per_attempt = int(decay.get("penalty_per_attempt", 0))
-        start_after_attempts = int(decay.get("start_after_attempts", 0))
-
-        eff_attempts = max(0, int(attempts) - start_after_attempts)
-        penalty = eff_attempts * penalty_per_attempt
-        awarded = max(min_score, int(base_score) - penalty)
-
-        return awarded, {
-            "type": "decay",
-            "mode": "attempt",
-            "attempts": attempts,
-            "effective_attempts": eff_attempts,
-            "penalty": penalty,
-            "base_score": base_score,
-            "min_score": min_score
-        }
-
-    # fallback
-    return base_score, {"type": "standard"}
-
 
 @shared_task
 def end_corporate_game(active_scenario):
@@ -1254,7 +1165,7 @@ def build_phase_lookup(scenario_meta):
 
 def resolve_item_meta(item):
     if item.get("flag_id"):
-        doc = flag_collection.find_one(
+        doc = flag_data_collection.find_one(
             {"id": item["flag_id"]},
             {"_id": 0, "id": 1, "title": 1}
         )
@@ -1265,7 +1176,7 @@ def resolve_item_meta(item):
         }
 
     if item.get("milestone_id"):
-        doc = milestone_collection.find_one(
+        doc = milestone_data_collection.find_one(
             {"id": item["milestone_id"]},
             {"_id": 0, "id": 1, "title": 1}
         )

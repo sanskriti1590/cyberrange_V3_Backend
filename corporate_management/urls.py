@@ -48,6 +48,8 @@ urlpatterns = [
     path("scenario/chat/channels/<str:active_scenario_id>/",ScenarioChatChannelsView.as_view(),name="corporate-chat-channel"),
     path("scenario/chat/messages/<str:channel_key>/",ScenarioChatMessagesView.as_view(),name="corporate-chat-message"),
     path("scenario/chat/send/", ScenarioChatSendView.as_view(),name="corporate-chat-send"),
-]
+    path("scenario/walkthrough/create/",CorporateScenarioWalkthroughCreateView.as_view(),),
+    path("scenario/walkthrough/list/",CorporateScenarioWalkthroughListView.as_view()),
+]  
 
 urlpatterns = format_suffix_patterns(urlpatterns)

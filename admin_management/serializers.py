@@ -235,6 +235,7 @@ class UserAdminSerializer(serializers.Serializer):
 
     class Meta:
         ref_name = 'AdminUserAdmin'  
+
         
 
 class UserRetrieveAdminSerializer(serializers.Serializer):
@@ -372,32 +373,28 @@ class UserUpdateAdminSerializer(serializers.Serializer):
         ref_name = 'AdminUserUpdateAdmin'  
     
 class UserRemoveAdminSerializer(serializers.Serializer):
-    def validate(self, data):
-        user_id = self.context['view'].kwargs.get('pk')
-        user = user_collection.find_one({'user_id': user_id})
-        admin_count = user_collection.count_documents({'is_admin': True})
+    user_id = serializers.CharField()
+
+    def validate_user_id(self, value):
+        user = user_collection.find_one({"user_id": value})
 
         if not user:
             raise serializers.ValidationError("Invalid User ID")
-        
-        if user["is_admin"] or user["is_superadmin"]:
-            raise serializers.ValidationError("Admin cannot delete.")
 
-        if admin_count <= 1:
-            raise serializers.ValidationError("Atleast one admin is required.")
-        
-        data['user_id'] = user_id 
-        return data 
+        if user.get("is_superadmin"):
+            raise serializers.ValidationError("Superadmin cannot be deleted")
 
-    def create(self, validated_data):        
-        user_collection.delete_one({ "user_id": validated_data['user_id']})
-        user_profile_collection.delete_one({ "user_id": validated_data['user_id']})
-        ctf_player_arsenal_collection.delete_one({ "user_id": validated_data['user_id']})
-        scenario_player_arsenal_collection.delete_one({ "scenario_participant_id": validated_data['user_id']})
-        
-        return {}
-    
+        return value
 
+    def save(self, **kwargs):
+        user_id = self.validated_data["user_id"]
+
+        result = user_collection.delete_one({"user_id": user_id})
+
+        if result.deleted_count == 0:
+            raise serializers.ValidationError("User not found for deletion")
+
+        return {"user_id": user_id}
 # CTF
 
 

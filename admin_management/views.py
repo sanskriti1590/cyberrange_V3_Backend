@@ -1,6 +1,12 @@
 from rest_framework import generics, status, serializers
 from rest_framework.response import Response
 from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
+from rest_framework.views import APIView
+
+
+import datetime
+import pandas as pd
 
 from corporate_management.serializers import (
     CorporateScenarioFlagCreateSerializer,
@@ -53,7 +59,10 @@ from database_management.pymongo_client import (
     milestone_data_collection,
     flag_data_collection,
     corporate_scenario_infra_collection,
+    user_collection,
+    user_profile_collection
 )
+from core.utils import API_URL
 
 class UserRegisterAdminView(generics.CreateAPIView):
     permission_classes = [CustomIsAdmin]
@@ -93,6 +102,94 @@ class UserListAdminView(generics.ListAPIView):
         queryset = self.get_queryset()
         return Response(queryset)
 
+class BulkUserUploadView(generics.CreateAPIView):
+    permission_classes = [CustomIsAdmin]
+    serializer_class = UserAdminSerializer
+
+    @swagger_auto_schema(
+        operation_summary="Bulk upload users via Excel",
+        operation_description="Upload Excel to bulk create users (password required)",
+        manual_parameters=[
+            openapi.Parameter(
+                name="file",
+                in_=openapi.IN_FORM,
+                type=openapi.TYPE_FILE,
+                required=True,
+            )
+        ],
+    )
+    def create(self, request, *args, **kwargs):
+        file = request.FILES.get("file")
+
+        if not file:
+            return Response({"errors": "File not provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            df = pd.read_excel(file)
+            df.columns = [c.strip() for c in df.columns]
+        except Exception:
+            return Response({"errors": "Invalid Excel file"}, status=status.HTTP_400_BAD_REQUEST)
+
+        required_columns = {
+            "user_full_name",
+            "email",
+            "mobile_number",
+            "user_role",
+            "password",
+        }
+
+        if not required_columns.issubset(df.columns):
+            return Response(
+                {"errors": f"Missing columns: {required_columns - set(df.columns)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        success_rows = []
+        failed_rows = []
+
+        for index, row in df.iterrows():
+            row_data = row.to_dict()
+
+            # 🔑 Make bulk compatible with UserAdminSerializer
+            row_data["confirm_password"] = row_data.get("password")
+            row_data.setdefault("is_verified", False)
+            row_data.setdefault("is_premium", False)
+            row_data.setdefault("is_admin", False)
+            row_data.setdefault("is_active", True)
+
+            serializer = self.get_serializer(data=row_data)
+
+            if not serializer.is_valid():
+                failed_rows.append({
+                    "row": index + 2,
+                    "errors": serializer.errors,
+                })
+                continue
+
+            try:
+                serializer.save()
+                success_rows.append({
+                    "row": index + 2,
+                    "email": row_data.get("email"),
+                })
+            except Exception as e:
+                failed_rows.append({
+                    "row": index + 2,
+                    "errors": str(e),
+                })
+
+        return Response(
+            {
+                "message": "Bulk User Upload Completed",
+                "total": len(df),
+                "success_count": len(success_rows),
+                "failed_count": len(failed_rows),
+                "failed_rows": failed_rows,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 
 class UserRetrieveAdminView(generics.RetrieveAPIView):
     permission_classes = [CustomIsAdmin]
@@ -130,27 +227,30 @@ class UserUpdateAdminView(generics.UpdateAPIView):
             response['message'] = "User Updation: Successful"
             return Response(response, status=status.HTTP_200_OK)
         return Response({'errors': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-    
-class UserRemoveAdminView(generics.DestroyAPIView):
+ 
+ 
+class UserDeleteAdminView(APIView):
     permission_classes = [CustomIsAdmin]
-    serializer_class = UserRemoveAdminSerializer
 
     @swagger_auto_schema(
         operation_summary="Remove a user by ID",
-        operation_description="Endpoint to remove a user by user ID",
+        operation_description="Soft delete (deactivate) a user",
         responses={202: "User removal successful"},
     )
-    def delete(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
+    def delete(self, request, user_id, *args, **kwargs):
+        serializer = UserRemoveAdminSerializer(
+            data={"user_id": user_id}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
 
-        if serializer.is_valid():
-            mapping = serializer.save()
-            response = serializer.data
-            response['message'] = "User Deletion: Successful"
-            return Response(response, status=status.HTTP_202_ACCEPTED)
-        return Response({'errors': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-    
-
+        return Response(
+            {
+                "user_id": user_id,
+                "message": "User Deletion: Successful",
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 # CTF
 
 class CTFCategoryListView(generics.ListAPIView):
