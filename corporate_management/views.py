@@ -43,9 +43,6 @@ from .serializers import (
     CorporateScenarioMilestoneCreateSerializer,
     CorporateScenarioInfraDetailSerializer,
     CorporateScenarioSwitchMachineSerializer,
-    CorporateScenarioAdminToggleFlagLockSerializer,
-    CorporateScenarioAdminToggleMilestoneLockSerializer,
-    CorporateScenarioAdminTogglePhaseLockSerializer,
     ScenarioChatSendSerializer,
     ScenarioChatMessageListSerializer,
 )
@@ -617,59 +614,6 @@ class CorporateScenarioSwitchMachineView(generics.GenericAPIView):
 
         return Response(result, status=status.HTTP_200_OK)
 
-class CorporateScenarioAdminToggleFlagLockView(generics.GenericAPIView):
-    permission_classes = [CustomIsAuthenticated]
-    serializer_class = CorporateScenarioAdminToggleFlagLockSerializer
-
-    @swagger_auto_schema(
-        request_body=CorporateScenarioAdminToggleFlagLockSerializer,
-        operation_summary="Admin lock/unlock a flag during gameplay",
-    )
-    def post(self, request, *args, **kwargs):
-        serializer = self.serializer_class(
-            data=request.data,
-            context={"request": request}
-        )
-        serializer.is_valid(raise_exception=True)
-        result = serializer.save()
-
-        return Response(result, status=status.HTTP_200_OK)
-
-class CorporateScenarioAdminToggleMilestoneLockView(generics.GenericAPIView):
-    permission_classes = [CustomIsAuthenticated]
-    serializer_class = CorporateScenarioAdminToggleMilestoneLockSerializer
-
-    @swagger_auto_schema(
-        request_body=CorporateScenarioAdminToggleMilestoneLockSerializer,
-        operation_summary="Admin lock/unlock a milestone during gameplay",
-    )
-    def post(self, request, *args, **kwargs):
-        serializer = self.serializer_class(
-            data=request.data,
-            context={"request": request}
-        )
-        serializer.is_valid(raise_exception=True)
-        result = serializer.save()
-
-        return Response(result, status=status.HTTP_200_OK)
-
-class CorporateScenarioAdminTogglePhaseLockView(generics.GenericAPIView):
-    permission_classes = [CustomIsAuthenticated]
-    serializer_class = CorporateScenarioAdminTogglePhaseLockSerializer
-
-    @swagger_auto_schema(
-        request_body=CorporateScenarioAdminTogglePhaseLockSerializer,
-        operation_summary="Admin lock/unlock an entire kill-chain phase",
-    )
-    def post(self, request, *args, **kwargs):
-        serializer = self.serializer_class(
-            data=request.data,
-            context={"request": request}
-        )
-        serializer.is_valid(raise_exception=True)
-        result = serializer.save()
-
-        return Response(result, status=status.HTTP_200_OK)
 
 #chat view
 class ScenarioChatChannelsView(APIView):

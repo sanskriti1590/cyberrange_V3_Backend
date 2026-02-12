@@ -29,6 +29,8 @@ urlpatterns = [
     path('api/admin/', include('admin_management.urls', namespace="admin")),
     path('api/notification/', include('notification_management.urls', namespace="notification")),
     path('api/corporate/', include('corporate_management.urls', namespace="corporate-management")),
+    path("api/superadmin/", include("superadmin_dashboard.urls", namespace="superadmin_dashboard")),
+
 
 
     path('api/', include('cyber_range_platform.api_urls', namespace="webbased_api")),
