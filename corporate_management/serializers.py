@@ -2299,12 +2299,13 @@ class CorporateScenarioModeratorSerializer(serializers.Serializer):
         return scenario
 
 
-
 class CorporateScenarioModeratorConsoleSerializer(serializers.Serializer):
+
     def to_representation(self, instance):
         return instance
 
     def get(self, user):
+
         active = active_scenario_collection.find_one(
             {"started_by": user["user_id"]},
             {"_id": 0}
@@ -2319,19 +2320,28 @@ class CorporateScenarioModeratorConsoleSerializer(serializers.Serializer):
         if not scenario:
             return {"errors": "Scenario not found"}
 
+        # ✅ FIXED: detect scenario type from SCENARIO definition
+        is_flag = bool(scenario.get("flag_data"))
+        is_milestone = bool(scenario.get("milestone_data"))
+
         payload = {
-            "scenario_type": "MILESTONE" if scenario.get("milestone_data") else "FLAG",
+            "scenario_type": "MILESTONE" if is_milestone else "FLAG",
             "active_scenario_id": active["id"],
             "start_time": active.get("start_time"),
             "participants_data": [],
-            "milestone_data": [],
             "kill_chain_progress": scenario.get("kill_chain_progress", []),
         }
 
-        # ---------- PARTICIPANTS ----------
+        # ================= PARTICIPANTS ======================
         for uid, pd_id in active["participant_data"].items():
-            pd = participant_data_collection.find_one({"id": pd_id}, {"_id": 0})
-            user_obj = user_collection.find_one({"user_id": uid}, {"_id": 0})
+
+            pd = participant_data_collection.find_one(
+                {"id": pd_id}, {"_id": 0}
+            )
+            user_obj = user_collection.find_one(
+                {"user_id": uid}, {"_id": 0}
+            )
+
             if not pd or not user_obj:
                 continue
 
@@ -2344,29 +2354,82 @@ class CorporateScenarioModeratorConsoleSerializer(serializers.Serializer):
                 "total_obtained_score": pd.get("total_obtained_score", 0),
             })
 
-            # ---------- MILESTONES (JOIN CORRECTLY) ----------
-            for md in pd.get("milestone_data", []):
-                milestone = milestone_data_collection.find_one(
-                    {"id": md["milestone_id"]},
-                    {"_id": 0}
+        # ================= MILESTONE MODE ====================
+        if is_milestone:
+
+            milestone_list = []
+
+            for uid, pd_id in active["participant_data"].items():
+
+                pd = participant_data_collection.find_one(
+                    {"id": pd_id}, {"_id": 0}
                 )
-                if not milestone:
+                if not pd:
                     continue
 
-                payload["milestone_data"].append({
-                    "milestone_id": md["milestone_id"],
-                    "phase_id": milestone.get("phase_id"),
-                    "milestone_name": milestone.get("name"),
-                    "milestone_description": milestone.get("description", ""),
-                    "milestone_score": milestone.get("score", 0),
-                    "obtained_score": md.get("obtained_score", 0),
-                    "is_achieved": md.get("is_achieved", False),
-                    "is_approved": md.get("is_approved", False),
-                    "hint_used": md.get("hint_used", False),
-                    "hint_string": milestone.get("hint"),
-                    "submitted_at": md.get("submitted_at"),
-                    "approved_at": md.get("approved_at"),
-                })
+                for md in pd.get("milestone_data", []):
+
+                    milestone = milestone_data_collection.find_one(
+                        {"id": md["milestone_id"]},
+                        {"_id": 0}
+                    )
+                    if not milestone:
+                        continue
+
+                    milestone_list.append({
+                        "participant_id": uid,
+                        "milestone_id": md["milestone_id"],
+                        "phase_id": milestone.get("phase_id"),
+                        "milestone_name": milestone.get("name"),
+                        "milestone_score": milestone.get("score", 0),
+                        "obtained_score": md.get("obtained_score", 0),
+                        "is_achieved": md.get("is_achieved", False),
+                        "is_approved": md.get("is_approved", False),
+                        "submitted_at": md.get("submitted_at"),
+                        "approved_at": md.get("approved_at"),
+                    })
+
+            payload["milestone_data"] = milestone_list
+
+        # ================= FLAG MODE =========================
+        if is_flag:
+
+            flag_list = []
+
+            for uid, pd_id in active["participant_data"].items():
+
+                pd = participant_data_collection.find_one(
+                    {"id": pd_id}, {"_id": 0}
+                )
+                if not pd:
+                    continue
+
+                for fd in pd.get("flag_data", []):
+
+                    flag_db = flag_data_collection.find_one(
+                        {"id": fd["flag_id"]},
+                        {"_id": 0}
+                    )
+                    if not flag_db:
+                        continue
+
+                    flag_list.append({
+                        "participant_id": uid,
+                        "flag_id": fd["flag_id"],
+                        "phase_id": fd.get("phase_id"),
+                        "flag_name": flag_db.get("question"),
+                        "flag_score": flag_db.get("score", 0),
+                        "submitted_response": fd.get("submitted_response"),
+                        "is_submitted": bool(fd.get("submitted_response")),
+                        "is_correct": fd.get("obtained_score", 0) > 0,
+                        "is_approved": bool(fd.get("approved_at")),
+                        "attempt_count": fd.get("retires", 0),
+                        "obtained_score": fd.get("obtained_score", 0),
+                        "submitted_at": fd.get("submitted_at"),
+                        "approved_at": fd.get("approved_at"),
+                    })
+
+            payload["flag_data"] = flag_list
 
         return payload
 
@@ -2439,13 +2502,20 @@ class CorporateScenarioModeratorConsoleDetailSerializer(serializers.Serializer):
     def validate(self, data):
         user = self.context["request"].user
 
-        active_scenario = active_scenario_collection.find_one(
-            {
-                "id": data["active_scenario_id"],
-                "started_by": user["user_id"],
-            },
-            {"_id": 0},
-        )
+        if user.get("is_superadmin") or user.get("is_admin"):
+            active_scenario = active_scenario_collection.find_one(
+                {"id": data["active_scenario_id"]},
+                {"_id": 0},
+            )
+        else:
+            active_scenario = active_scenario_collection.find_one(
+                {
+                    "id": data["active_scenario_id"],
+                    "started_by": user["user_id"],
+                },
+                {"_id": 0},
+            )
+
         if not active_scenario:
             raise serializers.ValidationError("Invalid Active Scenario ID")
 
@@ -2474,8 +2544,78 @@ class CorporateScenarioModeratorConsoleDetailSerializer(serializers.Serializer):
     def create(self, validated_data):
         participant = validated_data["participant"]
         scenario = validated_data["scenario"]
+        active_scenario = validated_data["active_scenario"]
 
-        # ---------- BUILD ITEMS ----------
+        is_flag = bool(scenario.get("flag_data"))
+        is_milestone = bool(scenario.get("milestone_data"))
+
+        # ---------- FETCH CONSOLE URL ----------
+        console_url = None
+        instance_id = participant.get("instance_id")
+
+        if instance_id:
+            try:
+                instance = get_cloud_instance(instance_id)
+                console = get_instance_console(instance)
+                console_url = getattr(console, "url", None)
+            except Exception:
+                console_url = None
+
+        # ================= FLAG SCENARIO =====================
+        if is_flag:
+
+            phase_lookup = {
+                p["id"]: p.get("phase_name") or p.get("name") or "Phase"
+                for p in scenario.get("phases", [])
+            }
+
+            items_by_phase = {}
+
+            for fd in participant.get("flag_data", []):
+
+                flag_db = flag_data_collection.find_one(
+                    {"id": fd["flag_id"]},
+                    {"_id": 0},
+                )
+                if not flag_db:
+                    continue
+
+                phase_id = fd.get("phase_id") or flag_db.get("phase_id")
+                phase_name = phase_lookup.get(phase_id, "Phase")
+
+                items_by_phase.setdefault(phase_id, {
+                    "phase_id": phase_id,
+                    "phase_name": phase_name,
+                    "items": [],
+                })["items"].append({
+                    "flag_id": fd["flag_id"],
+                    "flag_name": flag_db.get("question"),
+                    "flag_score": flag_db.get("score", 0),
+
+                    # Derived Fields
+                    "is_submitted": bool(fd.get("submitted_response")),
+                    "is_correct": fd.get("obtained_score", 0) > 0,
+                    "is_approved": bool(fd.get("approved_at")),
+                    "attempt_count": fd.get("retires", 0),
+
+                    "submitted_at": fd.get("submitted_at"),
+                    "approved_at": fd.get("approved_at"),
+                    "obtained_score": fd.get("obtained_score", 0),
+                })
+
+            return {
+                "scenario_type": "FLAG",
+                "active_scenario_id": active_scenario["id"],
+                "participant_id": participant["user_id"],
+                "team": participant.get("team"),
+                "console_url": console_url,
+                "itemsByPhase": items_by_phase,
+            }
+
+        # =====================================================
+        # ================= MILESTONE SCENARIO ===============
+        # =====================================================
+
         phase_lookup = {
             p["id"]: p.get("phase_name") or p.get("name") or "Phase"
             for p in scenario.get("phases", [])
@@ -2518,25 +2658,12 @@ class CorporateScenarioModeratorConsoleDetailSerializer(serializers.Serializer):
                 "locked_by_admin": md.get("locked_by_admin", False),
             })
 
-        # ---------- FETCH CONSOLE URL (🔥 FIX) ----------
-        console_url = None
-        instance_id = participant.get("instance_id")
-
-        if instance_id:
-            try:
-                instance = get_cloud_instance(instance_id)
-                console = get_instance_console(instance)
-                console_url = getattr(console, "url", None)
-            except Exception:
-                console_url = None
-
-        # ---------- FINAL RESPONSE ----------
         return {
             "scenario_type": "MILESTONE",
-            "active_scenario_id": validated_data["active_scenario"]["id"],
+            "active_scenario_id": active_scenario["id"],
             "participant_id": participant["user_id"],
-            "team": participant["team"],
-            "console_url": console_url,   # ✅ FIXED
+            "team": participant.get("team"),
+            "console_url": console_url,
             "itemsByPhase": items_by_phase,
             "total_milestone_count": sum(len(v["items"]) for v in items_by_phase.values()),
             "approved_milestone_count": sum(

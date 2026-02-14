@@ -267,15 +267,15 @@ class SuperAdminActiveScenarioLeaderboardSerializer(serializers.Serializer):
                 breakdown.append({
                     "type": "MILESTONE",
                     "phase_id": m.get("phase_id"),
-                    "item_id": mid,
-                    "name": config.get("name") or mid,
-                    "description": config.get("description") or "",
-                    "points": safe_int(config.get("score") or config.get("points")),
-                    "role": config.get("team") or role,
-                    "score": score,
-                    "status": bool(m.get("status", True)),
-                    "locked_by_admin": bool(m.get("locked_by_admin", False)),
+                    "milestone_id": mid,
+                    "milestone_name": config.get("name") or mid,
+                    "milestone_description": config.get("description") or "",
+                    "obtained_score": score,
+                    "hint_used": bool(m.get("hint_used")),
                     "submitted_at": submitted,
+                    "submitted_text": m.get("submitted_text"),
+                    "approved_at": to_ms(m.get("approved_at")),
+                    "locked_by_admin": bool(m.get("locked_by_admin", False)),
                 })
 
                 if submitted:
@@ -299,15 +299,15 @@ class SuperAdminActiveScenarioLeaderboardSerializer(serializers.Serializer):
                 breakdown.append({
                     "type": "FLAG",
                     "phase_id": f.get("phase_id"),
-                    "item_id": fid,
-                    "name": config.get("name") or fid,
-                    "description": config.get("description") or "",
-                    "points": safe_int(config.get("score") or config.get("points")),
-                    "role": config.get("team") or role,
-                    "score": score,
-                    "status": bool(f.get("status", True)),
-                    "locked_by_admin": bool(f.get("locked_by_admin", False)),
+                    "flag_id": fid,
+                    "flag_name": config.get("name") or fid,
+                    "obtained_score": score,
+                    "retries": safe_int(f.get("retires") or f.get("retries")),
+                    "hint_used": bool(f.get("hint_used")),
                     "submitted_at": submitted,
+                    "submitted_response": f.get("submitted_response"),
+                    "approved_at": to_ms(f.get("approved_at")),
+                    "locked_by_admin": bool(f.get("locked_by_admin", False)),
                 })
 
                 if submitted:
@@ -383,34 +383,44 @@ class SuperAdminActiveScenarioLeaderboardSerializer(serializers.Serializer):
             })
 
         # aggregate lock + assigned_to (team_groups where visible)
-        for pdoc in participants:
-            tg = pdoc.get("team_group") or "NO_GROUP"
+        for phase_id, items in config_by_phase.items():
 
-            for fd in (pdoc.get("flag_data") or []):
-                phase_id = fd.get("phase_id")
-                fid = fd.get("flag_id")
-                if not phase_id or not fid:
-                    continue
-                for item in config_by_phase.get(phase_id, []):
-                    if item["type"] == "FLAG" and item["id"] == fid:
-                        is_locked = bool(fd.get("locked_by_admin", False)) or (not bool(fd.get("status", True)))
-                        if not is_locked:
-                            item["locked"] = False
-                            if tg not in item["assigned_to"]:
-                                item["assigned_to"].append(tg)
+            for item in items:
 
-            for md in (pdoc.get("milestone_data") or []):
-                phase_id = md.get("phase_id")
-                mid = md.get("milestone_id")
-                if not phase_id or not mid:
+                relevant_participants = []
+
+                for pdoc in participants:
+                    tg = pdoc.get("team_group") or "NO_GROUP"
+
+                    if item["type"] == "FLAG":
+                        for fd in (pdoc.get("flag_data") or []):
+                            if fd.get("flag_id") == item["id"]:
+                                relevant_participants.append((fd, tg))
+
+                    if item["type"] == "MILESTONE":
+                        for md in (pdoc.get("milestone_data") or []):
+                            if md.get("milestone_id") == item["id"]:
+                                relevant_participants.append((md, tg))
+
+                # if no participants assigned → keep locked
+                if not relevant_participants:
+                    item["locked"] = True
                     continue
-                for item in config_by_phase.get(phase_id, []):
-                    if item["type"] == "MILESTONE" and item["id"] == mid:
-                        is_locked = bool(md.get("locked_by_admin", False)) or (not bool(md.get("status", True)))
-                        if not is_locked:
-                            item["locked"] = False
-                            if tg not in item["assigned_to"]:
-                                item["assigned_to"].append(tg)
+
+                # check if ALL are unlocked
+                all_unlocked = True
+                assigned_teams = []
+
+                for data_obj, tg in relevant_participants:
+                    is_locked = bool(data_obj.get("locked_by_admin", False)) or (not bool(data_obj.get("status", True)))
+
+                    if is_locked:
+                        all_unlocked = False
+                    else:
+                        assigned_teams.append(tg)
+
+                item["locked"] = not all_unlocked
+                item["assigned_to"] = list(set(assigned_teams))
 
  
         # SCORE ADJUSTMENTS (audit)
@@ -424,6 +434,7 @@ class SuperAdminActiveScenarioLeaderboardSerializer(serializers.Serializer):
                 a["timestamp_ms"] = to_ms(ts)
 
         return {
+            "scenario_type": scenario.get("scenario_type") or "FLAG",
             "players": players,
             "phases": phases_list,
             "teams_present": list(set(p["team_group"] for p in players)),
@@ -761,4 +772,60 @@ class SuperAdminTogglePhaseLockSerializer(serializers.Serializer):
             "scope": validated_data["scope"],
             "updated_participants": res.modified_count,
             "timestamp_ms": to_ms(now),
+        }
+    
+class CorporateScenarioConsoleMonitorSerializer(serializers.Serializer):
+
+    def to_representation(self, instance):
+        return instance
+
+    def get(self, user, active_scenario_id):
+
+        # Superadmin or admin → full access
+        if user.get("is_superadmin") or user.get("is_admin"):
+            active = active_scenario_collection.find_one(
+                {"id": active_scenario_id},
+                {"_id": 0}
+            )
+        else:
+            # White team restriction
+            active = active_scenario_collection.find_one(
+                {
+                    "id": active_scenario_id,
+                    "started_by": user["user_id"]
+                },
+                {"_id": 0}
+            )
+
+        if not active:
+            return {"errors": "Scenario not found or not authorized"}
+
+        participants = []
+
+        for uid, pd_id in active.get("participant_data", {}).items():
+
+            pd = participant_data_collection.find_one(
+                {"id": pd_id}, {"_id": 0}
+            )
+
+            user_info = user_collection.find_one(
+                {"user_id": uid}, {"_id": 0}
+            )
+
+            if not pd or not user_info:
+                continue
+
+            participants.append({
+                "participant_id": uid,
+                "participant_name": user_info.get("user_full_name"),
+                "participant_avatar": user_info.get("user_avatar"),
+                "team": pd.get("team"),
+                "team_group": pd.get("team_group", "Default"),
+                "instance_id": pd.get("instance_id"),
+                "logical_machine_name": pd.get("logical_machine_name"),
+            })
+
+        return {
+            "active_scenario_id": active_scenario_id,
+            "participants_data": participants
         }

@@ -77,3 +77,29 @@ class SuperAdminTogglePhaseLockView(generics.CreateAPIView):
             result = serializer.save()
             return Response(result, status=status.HTTP_200_OK)
         return Response({"errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+    
+class SuperAdminScenarioConsoleMonitorView(generics.CreateAPIView):
+    permission_classes = [CustomIsSuperAdmin]
+    serializer_class = CorporateScenarioConsoleMonitorSerializer
+
+    def create(self, request, *args, **kwargs):
+
+        active_scenario_id = request.data.get("active_scenario_id")
+
+        if not active_scenario_id:
+            return Response(
+                {"errors": "active_scenario_id is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = self.get_serializer()
+
+        data = serializer.get(
+            user=request.user,
+            active_scenario_id=active_scenario_id
+        )
+
+        if data.get("errors"):
+            return Response(data, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(data, status=status.HTTP_200_OK)

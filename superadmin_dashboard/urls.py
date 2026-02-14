@@ -57,6 +57,14 @@ urlpatterns = [
         SuperAdminTogglePhaseLockView.as_view(),
         name='superadmin-phase-lock'
     ),
+
+        
+    path(
+        "scenario/console-monitor/",
+        SuperAdminScenarioConsoleMonitorView.as_view(),
+        name="superadmin-console-monitor"
+    ),
 ]
+
 
 urlpatterns = format_suffix_patterns(urlpatterns)
